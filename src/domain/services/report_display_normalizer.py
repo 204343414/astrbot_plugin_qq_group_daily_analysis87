@@ -17,8 +17,19 @@ class ReportDisplayNormalizer:
     not a moderation bypass mechanism.
     """
 
-    def __init__(self, replacements: dict[str, str] | None = None):
+    def __init__(
+        self,
+        replacements: dict[str, str] | None = None,
+        mosaic_patterns: list[str] | None = None,
+        mosaic_character: str = "█",
+    ):
         pairs = replacements or {}
+        self._mosaic_patterns = sorted(
+            {str(item) for item in (mosaic_patterns or []) if str(item)},
+            key=len,
+            reverse=True,
+        )
+        self._mosaic_character = str(mosaic_character or "█")[0]
         # Longest first avoids a short key changing part of a longer key first.
         self._pairs = sorted(
             (
@@ -32,6 +43,10 @@ class ReportDisplayNormalizer:
 
     def text(self, value: str) -> str:
         value = str(value or "")
+        # Mosaic has priority: a phrase configured for masking must not first
+        # be transformed by an ordinary display replacement.
+        for source in self._mosaic_patterns:
+            value = value.replace(source, self._mosaic_character * len(source))
         for source, target in self._pairs:
             value = value.replace(source, target)
         return value
