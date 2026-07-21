@@ -686,6 +686,21 @@ class ConfigManager:
         """获取是否发送 \"📊 每日群聊分析报告已生成\" 前缀文字。"""
         return self._get_group("basic").get("show_report_caption", True)
 
+    def get_manual_analysis_daily_limit(self) -> int:
+        """每位用户在每个群每天可成功生成报告的次数；0 表示不限制。"""
+        try:
+            return max(0, int(self._get_group("basic").get("manual_analysis_daily_limit", 1)))
+        except (TypeError, ValueError):
+            return 1
+
+    def get_disable_text_report_fallback(self) -> bool:
+        """图片报告失败时是否禁止向群发送文本总结。"""
+        return bool(self._get_group("basic").get("disable_text_report_fallback", True))
+
+    def get_image_failure_message(self) -> str:
+        """图片报告生成或发送失败时的固定短提示。"""
+        return str(self._get_group("basic").get("image_failure_message", "卡片渲染失败惹"))
+
     def set_show_report_caption(self, enabled: bool):
         """设置是否发送 \"📊 每日群聊分析报告已生成\" 前缀文字。"""
         self._ensure_group("basic")["show_report_caption"] = enabled
