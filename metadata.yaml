@@ -10,4 +10,4 @@ support_platforms:
   - telegram
   - qq_official
   - qq_official_webhook
-repo: https://github.com/204343414/astrbot_plugin_qq_group_daily_analysis87/blob/main/metadata.yaml
+repo: "https://github.com/204343414/astrbot_plugin_qq_group_daily_analysis87"
