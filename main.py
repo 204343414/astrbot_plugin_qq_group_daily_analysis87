@@ -501,7 +501,7 @@ class GroupDailyAnalysis(Star):
 
     @filter.command("群分析", alias={"group_analysis"})
     async def analyze_group_daily(
-        self, event: AstrMessageEvent, days: int | None = None
+        self, event: AstrMessageEvent, days: str | None = None
     ):
         """
         分析群聊日常活动（跨平台支持）
@@ -523,6 +523,21 @@ class GroupDailyAnalysis(Star):
             if not group_id:
                 yield event.plain_result("❌ 请在群聊中使用此命令")
                 return
+
+            # /群分析 debug is a no-LLM diagnostic and never consumes quota.
+            command_arg = str(days or "").strip()
+            if command_arg.lower() in {"debug", "诊断"}:
+                yield event.plain_result(self._build_group_analysis_debug_report())
+                return
+            analysis_days: int | None = None
+            if command_arg:
+                try:
+                    analysis_days = int(command_arg)
+                    if analysis_days <= 0:
+                        raise ValueError
+                except ValueError:
+                    yield event.plain_result("❌ 天数必须是正整数；诊断请使用 /群分析 debug")
+                    return
 
             # 更新bot实例
             self.bot_manager.update_from_event(event)
@@ -597,7 +612,7 @@ class GroupDailyAnalysis(Star):
 
             # 调用 DDD 应用级服务
             result = await self.analysis_service.execute_daily_analysis(
-                group_id=group_id, platform_id=platform_id, manual=True, days=days
+                group_id=group_id, platform_id=platform_id, manual=True, days=analysis_days
             )
 
             if not result.get("success"):
@@ -634,6 +649,33 @@ class GroupDailyAnalysis(Star):
                 self._manual_analysis_inflight.discard(quota_key)
             if current_task:
                 self._background_tasks.discard(current_task)
+
+    def _build_group_analysis_debug_report(self) -> str:
+        """Return configuration/path diagnostics without running an analysis."""
+        safety = self.config.get("report_safety", {})
+        if not isinstance(safety, dict):
+            safety = {}
+        raw_replacements = safety.get("display_replacements", "{}")
+        replacements = self.config_manager.get_report_display_replacements()
+        mosaic_patterns = self.config_manager.get_report_mosaic_patterns()
+        mosaic_character = self.config_manager.get_report_mosaic_character()
+        sample_before = "shit / 屎 / 傻逼 / 废物"
+        sample_after = self.llm_analyzer._display_normalizer().text(sample_before)
+        topic_prompt = self.config_manager.get_topic_analysis_prompt()
+        safety_prompt_active = "强制安全输出规则" in topic_prompt
+        raw_kind = type(raw_replacements).__name__
+        return (
+            "📋 群分析诊断（不会运行 LLM、不会消耗次数）\n"
+            f"• 全局安全提示词：{'已注入' if safety_prompt_active else '未注入'}\n"
+            f"• 展示替换总开关：{'开启' if safety.get('display_replacement_enabled', True) else '关闭'}\n"
+            f"• 词典原始类型：{raw_kind}\n"
+            f"• 成功解析替换规则数：{len(replacements)}\n"
+            f"• 马赛克开关：{'开启' if safety.get('mosaic_enabled', False) else '关闭'}\n"
+            f"• 马赛克规则数/字符：{len(mosaic_patterns)} / {mosaic_character}\n"
+            f"• 替换自测：{sample_before} → {sample_after}\n"
+            "• 覆盖路径：话题、金句、称号理由、聊天质量锐评\n"
+            "• 注：已有增量历史内容需重新分析后才会使用新词典。"
+        )
 
     async def _send_analysis_report(
         self, event: AstrMessageEvent, result: dict
