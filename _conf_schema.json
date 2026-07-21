@@ -699,6 +699,20 @@
                 "default": true,
                 "hint": "关闭后不再向任何报告分析提示词追加统一安全规则。"
             },
+            "display_replacement_enabled": {
+                "type": "bool",
+                "description": "启用报告展示替换词典",
+                "default": true,
+                "hint": "只对 LLM 已生成、即将进入报告的文案字段生效；不会修改原始群聊记录、QQ 号或群友昵称。"
+            },
+            "display_replacements": {
+                "type": "text",
+                "description": "报告展示替换词典（JSON）",
+                "editor_mode": true,
+                "editor_language": "json",
+                "default": "{\n  \"shit\": \"💩\",\n  \"屎\": \"💩\"\n}",
+                "hint": "键为要替换的完整字面文本，值为展示文本。按键长度从长到短替换；仅用于报告文案文明化/风格化。例：{\"shit\": \"💩\"}。"
+            },
             "global_prompt_rule": {
                 "type": "text",
                 "description": "全局安全输出规则",
