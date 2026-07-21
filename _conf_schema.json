@@ -713,6 +713,25 @@
                 "default": "{\n  \"shit\": \"💩\",\n  \"屎\": \"💩\"\n}",
                 "hint": "键为要替换的完整字面文本，值为展示文本。按键长度从长到短替换；仅用于报告文案文明化/风格化。例：{\"shit\": \"💩\"}。"
             },
+            "mosaic_enabled": {
+                "type": "bool",
+                "description": "启用报告文字马赛克",
+                "default": false,
+                "hint": "命中下方词组时，以同长度方块字符遮罩；马赛克规则优先于普通展示替换词典。"
+            },
+            "mosaic_patterns": {
+                "type": "list",
+                "description": "马赛克词组列表",
+                "default": [],
+                "items": {"type": "string"},
+                "hint": "填写要遮罩的完整字面词组。按长度从长到短匹配。不要填过短的常用单字，以免大面积误伤报告文本。"
+            },
+            "mosaic_character": {
+                "type": "string",
+                "description": "马赛克字符",
+                "default": "█",
+                "hint": "只取输入的第一个字符。示例：█、▓、■。命中词组会按原字符数重复该字符。"
+            },
             "global_prompt_rule": {
                 "type": "text",
                 "description": "全局安全输出规则",
