@@ -68,7 +68,11 @@ class LLMAnalyzer(IAnalysisProvider):
         return f"{prefix}{timestamp}"
 
     def _display_normalizer(self) -> ReportDisplayNormalizer:
-        return ReportDisplayNormalizer(self.config_manager.get_report_display_replacements())
+        return ReportDisplayNormalizer(
+            replacements=self.config_manager.get_report_display_replacements(),
+            mosaic_patterns=self.config_manager.get_report_mosaic_patterns(),
+            mosaic_character=self.config_manager.get_report_mosaic_character(),
+        )
 
     async def analyze_topics(
         self,
