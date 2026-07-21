@@ -19,6 +19,7 @@ from .analyzers.chat_quality_analyzer import ChatQualityAnalyzer
 from .analyzers.golden_quote_analyzer import GoldenQuoteAnalyzer
 from .analyzers.topic_analyzer import TopicAnalyzer
 from .analyzers.user_title_analyzer import UserTitleAnalyzer
+from ...domain.services.report_display_normalizer import ReportDisplayNormalizer
 from .utils.json_utils import fix_json
 from .utils.llm_utils import call_provider_with_retry
 
@@ -65,6 +66,9 @@ class LLMAnalyzer(IAnalysisProvider):
             safe_umo = umo.replace(":", "_")
             return f"{prefix}{timestamp}_{safe_umo}"
         return f"{prefix}{timestamp}"
+
+    def _display_normalizer(self) -> ReportDisplayNormalizer:
+        return ReportDisplayNormalizer(self.config_manager.get_report_display_replacements())
 
     async def analyze_topics(
         self,
@@ -119,9 +123,10 @@ class LLMAnalyzer(IAnalysisProvider):
             session_id = self._make_session_id(session_id, umo)
 
             logger.info(f"开始用户称号分析, session_id: {session_id}")
-            return await self.user_title_analyzer.analyze_user_titles(
+            titles, usage = await self.user_title_analyzer.analyze_user_titles(
                 messages, user_activity, umo, top_users, session_id
             )
+            return self._display_normalizer().user_titles(titles), usage
         except Exception as e:
             logger.error(f"用户称号分析失败: {e}")
             return [], TokenUsage()
@@ -148,9 +153,10 @@ class LLMAnalyzer(IAnalysisProvider):
             session_id = self._make_session_id(session_id, umo)
 
             logger.info(f"开始金句分析, session_id: {session_id}")
-            return await self.golden_quote_analyzer.analyze_golden_quotes(
+            quotes, usage = await self.golden_quote_analyzer.analyze_golden_quotes(
                 messages, umo, session_id
             )
+            return self._display_normalizer().golden_quotes(quotes), usage
         except Exception as e:
             logger.error(f"金句分析失败: {e}")
             return [], TokenUsage()
@@ -164,9 +170,10 @@ class LLMAnalyzer(IAnalysisProvider):
         """
         汇总多个质量分析报告（增量模式使用）
         """
-        return await self.chat_quality_analyzer.summarize_batch_reviews(
+        review, usage = await self.chat_quality_analyzer.summarize_batch_reviews(
             batch_reviews, umo, session_id
         )
+        return self._display_normalizer().quality_review(review), usage
 
     async def analyze_all_concurrent(
         self,
@@ -290,6 +297,11 @@ class LLMAnalyzer(IAnalysisProvider):
                 + quality_usage.total_tokens,
             )
 
+            normalizer = self._display_normalizer()
+            topics = normalizer.topics(topics)
+            user_titles = normalizer.user_titles(user_titles)
+            golden_quotes = normalizer.golden_quotes(golden_quotes)
+            chat_quality_review = normalizer.quality_review(chat_quality_review)
             logger.info(
                 f"并发分析完成 - 话题: {len(topics)}, 称号: {len(user_titles)}, 金句: {len(golden_quotes)}, 质量锐评: {1 if chat_quality_review else 0}"
             )
@@ -413,6 +425,10 @@ class LLMAnalyzer(IAnalysisProvider):
                     + quality_usage.total_tokens,
                 )
 
+                normalizer = self._display_normalizer()
+                topics = normalizer.topics(topics)
+                golden_quotes = normalizer.golden_quotes(golden_quotes)
+                chat_quality_review = normalizer.quality_review(chat_quality_review)
                 logger.info(
                     f"增量并发分析完成 - 话题: {len(topics)}, 金句: {len(golden_quotes)}, 质量锐评: {1 if chat_quality_review else 0}, "
                     f"Token消耗: {total_usage.total_tokens}"
