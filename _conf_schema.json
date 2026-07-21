@@ -149,6 +149,24 @@
                 "description": "发送报告时附带 \"📊 每日群聊分析报告已生成\" 前缀",
                 "default": true,
                 "hint": "关闭后，发送图片/HTML 报告时将只发送文件本身，不附带 \"📊 每日群聊分析报告已生成\" 等文字前缀。"
+            },
+            "manual_analysis_daily_limit": {
+                "type": "int",
+                "description": "手动群分析每日成功次数",
+                "default": 1,
+                "hint": "每名用户在每个群每天最多成功发送几张群分析图片。0=不限制；仅在图片确认发送成功后计数。"
+            },
+            "disable_text_report_fallback": {
+                "type": "bool",
+                "description": "图片失败时禁止文本总结",
+                "default": true,
+                "hint": "开启后，图片渲染或发送失败不会降级发送文本总结，只发送固定失败提示。"
+            },
+            "image_failure_message": {
+                "type": "string",
+                "description": "图片失败提示",
+                "default": "卡片渲染失败惹",
+                "hint": "仅在图片生成或发送失败且禁止文本兜底时发送。"
             }
         }
     },
