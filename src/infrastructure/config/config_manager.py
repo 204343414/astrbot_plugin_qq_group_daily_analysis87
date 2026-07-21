@@ -712,6 +712,21 @@ class ConfigManager:
         """获取是否发送 \"📊 每日群聊分析报告已生成\" 前缀文字。"""
         return self._get_group("basic").get("show_report_caption", True)
 
+    def get_report_mosaic_patterns(self) -> list[str]:
+        """Get literal report phrases that should be masked with mosaic blocks."""
+        safety = self._get_group("report_safety")
+        if not bool(safety.get("mosaic_enabled", False)):
+            return []
+        value = safety.get("mosaic_patterns", [])
+        if not isinstance(value, list):
+            return []
+        return sorted({str(item) for item in value if str(item)}, key=len, reverse=True)
+
+    def get_report_mosaic_character(self) -> str:
+        safety = self._get_group("report_safety")
+        value = str(safety.get("mosaic_character", "█") or "█")
+        return value[0]
+
     def get_report_display_replacements(self) -> dict[str, str]:
         """Get literal, presentation-only replacements for generated reports."""
         safety = self._get_group("report_safety")
