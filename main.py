@@ -37,6 +37,9 @@ from .src.infrastructure.config.config_manager import ConfigManager
 from .src.infrastructure.messaging.message_sender import MessageSender
 from .src.infrastructure.persistence.history_manager import HistoryManager
 from .src.infrastructure.persistence.incremental_store import IncrementalStore
+from .src.infrastructure.persistence.manual_analysis_quota_store import (
+    ManualAnalysisQuotaStore,
+)
 from .src.infrastructure.persistence.platform_group_registry import (
     PlatformGroupRegistry,
 )
@@ -77,6 +80,7 @@ class GroupDailyAnalysis(Star):
     template_preview_router: TemplatePreviewRouter
     auto_scheduler: AutoScheduler
     message_sender: MessageSender
+    manual_analysis_quota_store: ManualAnalysisQuotaStore
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -90,6 +94,8 @@ class GroupDailyAnalysis(Star):
         self.history_manager = HistoryManager(self)
 
         plugin_data_dir = StarTools.get_data_dir(PLUGIN_NAME)
+        self.manual_analysis_quota_store = ManualAnalysisQuotaStore(plugin_data_dir)
+        self._manual_analysis_inflight: set[tuple[str, str, str]] = set()
 
         self.report_generator = ReportGenerator(self.config_manager, plugin_data_dir)
 
@@ -494,7 +500,6 @@ class GroupDailyAnalysis(Star):
                     pass
 
     @filter.command("群分析", alias={"group_analysis"})
-    @filter.permission_type(PermissionType.ADMIN)
     async def analyze_group_daily(
         self, event: AstrMessageEvent, days: int | None = None
     ):
@@ -506,6 +511,7 @@ class GroupDailyAnalysis(Star):
             return
 
         current_task = asyncio.current_task()
+        quota_key: tuple[str, str, str] | None = None
         if current_task:
             self._background_tasks.add(current_task)
 
@@ -533,6 +539,24 @@ class GroupDailyAnalysis(Star):
                 # No, config_manager.is_group_allowed already handles simple ID matching if whitelist item is simple ID.
                 yield event.plain_result("❌ 此群未启用日常分析功能")
                 return
+
+            # The external beta gate decides *who* may invoke this command.
+            # This plugin owns only its success-based per-user/per-group quota.
+            sender = getattr(getattr(event, "message_obj", None), "sender", None)
+            user_id = str(getattr(sender, "user_id", "") or "").strip()
+            if not user_id:
+                logger.warning("无法读取 /群分析 调用者 ID，拒绝执行以避免绕过配额")
+                yield event.plain_result("❌ 无法识别调用者身份")
+                return
+            quota_key = (str(platform_id), user_id, str(group_id))
+            if quota_key in self._manual_analysis_inflight:
+                yield event.plain_result("📊 你在本群的群分析正在执行中，请稍后再试")
+                return
+            daily_limit = self.config_manager.get_manual_analysis_daily_limit()
+            if self.manual_analysis_quota_store.is_limit_reached(*quota_key, daily_limit):
+                yield event.plain_result("📊 你今天在本群的群分析次数已用完")
+                return
+            self._manual_analysis_inflight.add(quota_key)
 
             # 获取群名以生成语义化的 TraceID
             group_name = ""
@@ -606,6 +630,8 @@ class GroupDailyAnalysis(Star):
                 f"❌ 分析失败: {str(e)}。请检查网络连接和LLM配置，或联系管理员"
             )
         finally:
+            if quota_key:
+                self._manual_analysis_inflight.discard(quota_key)
             if current_task:
                 self._background_tasks.discard(current_task)
 
@@ -649,18 +675,24 @@ class GroupDailyAnalysis(Star):
             )
 
             if image_url:
-                caption = (
-                    TraceContext.make_report_caption()
-                    if self.config_manager.get_show_report_caption()
-                    else ""
-                )
-                sent = await adapter.send_image(group_id, image_url, caption=caption)
+                # Manual beta reports are sent as a bare image: no text caption.
+                sent = await adapter.send_image(group_id, image_url, caption="")
                 if sent:
+                    # Quota is charged only after the adapter confirms that the
+                    # image was sent. Rendering/sending failure never consumes it.
+                    sender = getattr(getattr(event, "message_obj", None), "sender", None)
+                    user_id = str(getattr(sender, "user_id", "") or "").strip()
+                    if user_id:
+                        self.manual_analysis_quota_store.mark_success(
+                            str(platform_id), user_id, str(group_id)
+                        )
                     await self._try_upload_image(group_id, image_url, platform_id)
                     return  # 成功发送
 
-            # 如果图片生成或发送失败，直接回退到文本
-            logger.warning(f"图片报告发送失败，正在发送文本回退报告。群: {group_id}")
+            logger.warning(f"图片报告生成或发送失败。群: {group_id}")
+            if self.config_manager.get_disable_text_report_fallback():
+                yield event.plain_result(self.config_manager.get_image_failure_message())
+                return
             await self._send_text_reports(
                 group_id, analysis_result, is_qq_official, adapter
             )
