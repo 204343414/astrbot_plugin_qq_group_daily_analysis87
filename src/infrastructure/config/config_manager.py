@@ -712,6 +712,27 @@ class ConfigManager:
         """获取是否发送 \"📊 每日群聊分析报告已生成\" 前缀文字。"""
         return self._get_group("basic").get("show_report_caption", True)
 
+    def get_report_display_replacements(self) -> dict[str, str]:
+        """Get literal, presentation-only replacements for generated reports."""
+        safety = self._get_group("report_safety")
+        if not bool(safety.get("display_replacement_enabled", True)):
+            return {}
+        value = safety.get("display_replacements", "{}")
+        if isinstance(value, str):
+            import json
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                logger.warning("报告展示替换词典不是有效 JSON，已忽略")
+                return {}
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(source): str(target)
+            for source, target in value.items()
+            if isinstance(source, str) and source
+        }
+
     def get_manual_analysis_daily_limit(self) -> int:
         """每位用户在每个群每天可成功生成报告的次数；0 表示不限制。"""
         try:
