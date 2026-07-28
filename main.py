@@ -721,6 +721,39 @@ class GroupDailyAnalysis(Star):
                 except OSError:
                     pass
 
+    @filter.command(
+        "群分析 指纹认证",
+        alias={"group_analysis fingerprint", "群分析 认证"},
+        priority=100,
+    )
+    async def group_analysis_fingerprint_registered(self, event: AstrMessageEvent):
+        """在内测群登记当前 QQ 官方 OpenID。"""
+        event.stop_event()
+        async for result in self._handle_fingerprint_command(event):
+            yield result
+
+    @filter.command(
+        "群分析 每日订阅",
+        alias={"group_analysis subscribe", "群分析 订阅每日", "群分析 订阅"},
+        priority=100,
+    )
+    async def group_analysis_daily_subscribe_registered(self, event: AstrMessageEvent):
+        """订阅当前 QQ 官方群的每日群分析。"""
+        event.stop_event()
+        async for result in self._handle_daily_subscribe_command(event):
+            yield result
+
+    @filter.command(
+        "群分析 取消每日",
+        alias={"group_analysis unsubscribe", "群分析 每日取消", "群分析 取消订阅"},
+        priority=100,
+    )
+    async def group_analysis_daily_unsubscribe_registered(self, event: AstrMessageEvent):
+        """取消当前 QQ 官方群的每日群分析订阅。"""
+        event.stop_event()
+        async for result in self._handle_daily_unsubscribe_command(event):
+            yield result
+
     @filter.command("群分析", alias={"group_analysis"})
     async def analyze_group_daily(
         self, event: AstrMessageEvent, days: str | None = None
