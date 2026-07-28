@@ -71,7 +71,9 @@
                     "text",
                     "html"
                 ],
-                "default": ["image"],
+                "default": [
+                    "image"
+                ],
                 "hint": "选择分析报告的输出方式（可多选）。image=图片、text=纯文本摘要、html=可交互式网页文件。多选仅在定时分析发送时时报告按顺序依次发送，手动触发时只发送第一个选中的格式，例如 image+html 会发送图片并通过外链提供 HTML 报告。QQ 官方图片/HTML 报告优先显示事件昵称，昵称缺失时使用群内稳定匿名名；文本报告由独立 Markdown 模块使用成员艾特展示身份。其他平台保持原有昵称文本格式。"
             },
             "report_template": {
@@ -152,9 +154,9 @@
             },
             "manual_analysis_daily_limit": {
                 "type": "int",
-                "description": "手动群分析每日成功次数",
+                "description": "手动群分析每日成功次数（每群）",
                 "default": 1,
-                "hint": "每名用户在每个群每天最多成功发送几张群分析图片。0=不限制；仅在图片确认发送成功后计数。"
+                "hint": "每个群每天最多成功发送几张群分析图片。0=不限制；仅在图片确认发送成功后计数，不再按用户分别计数。"
             },
             "disable_text_report_fallback": {
                 "type": "bool",
@@ -183,6 +185,49 @@
             }
         }
     },
+    "qq_official_beta": {
+        "description": "QQ 官方内测订阅",
+        "type": "object",
+        "hint": "QQ 官方 Bot 专精：用户必须先在内测群执行 /群分析 指纹认证，之后才能在自己有管理权限的群通过 Hub/命令订阅每日群分析。插件不拉取历史消息，只分析 AstrBot 已缓存的群消息。",
+        "items": {
+            "beta_group_umos": {
+                "type": "list",
+                "description": "内测群完整 UMO 列表",
+                "default": [],
+                "items": {
+                    "type": "string"
+                },
+                "hint": "推荐填写完整会话，例如 default_102824564:GroupMessage:GROUP_OPENID。用户只能在这些群内执行 /群分析 指纹认证。"
+            },
+            "beta_group_openids": {
+                "type": "list",
+                "description": "内测群 group_openid 列表",
+                "default": [],
+                "items": {
+                    "type": "string"
+                },
+                "hint": "兼容只填 QQ 官方 group_openid。多 Bot 实例时建议优先使用完整 UMO。"
+            },
+            "subscription_probe_message": {
+                "type": "string",
+                "description": "订阅成功与主动消息探测文案",
+                "default": "✅ 群分析每日订阅成功，今后将在设定时间向本群推送每日群分析报告。",
+                "hint": "/群分析 每日订阅 会先发送这条主动消息作为权限探测；发送成功才写入订阅。"
+            },
+            "subscription_probe_fail_message": {
+                "type": "string",
+                "description": "主动消息探测失败提示",
+                "default": "订阅失败：主动消息探测未通过，已取消本群每日群分析订阅。",
+                "hint": "普通命令场景下探测失败时尽力回复；如果由 type=1 主动回调触发且本身无主动消息权限，可能无法送达。"
+            },
+            "safe_report_caption": {
+                "type": "string",
+                "description": "QQ 官方报告固定说明",
+                "default": "基于聊天记录总结的今日群分析报告已生成（仅供参考）。如果卡片无内容，请确认是否给 Bot 开启了获取群消息的权限。",
+                "hint": "QQ 官方图片报告前附带的固定说明，用于提示报告基于本地已缓存聊天记录。"
+            }
+        }
+    },
     "t2i_rendering": {
         "description": "图片渲染策略",
         "type": "object",
@@ -191,7 +236,10 @@
             "t2i_r1_type": {
                 "type": "string",
                 "description": "第一轮：图片格式",
-                "options": ["jpeg", "png"],
+                "options": [
+                    "jpeg",
+                    "png"
+                ],
                 "default": "png",
                 "hint": "建议：PNG 格式无损但体积较大；JPEG 格式体积较小。"
             },
@@ -209,7 +257,11 @@
             "t2i_r1_device_scale": {
                 "type": "string",
                 "description": "第一轮：分辨率等级",
-                "options": ["normal", "high", "ultra"],
+                "options": [
+                    "normal",
+                    "high",
+                    "ultra"
+                ],
                 "default": "ultra",
                 "hint": "影响图片清晰度。normal=1.0x, high=1.3x, ultra=1.8x。高质量日报建议 ultra。"
             },
@@ -227,7 +279,10 @@
             "t2i_r2_type": {
                 "type": "string",
                 "description": "第二轮 (回退)：图片格式",
-                "options": ["jpeg", "png"],
+                "options": [
+                    "jpeg",
+                    "png"
+                ],
                 "default": "jpeg",
                 "hint": "回退策略建议使用 jpeg 以减少渲染压力。"
             },
@@ -245,7 +300,11 @@
             "t2i_r2_device_scale": {
                 "type": "string",
                 "description": "第二轮 (回退)：分辨率等级",
-                "options": ["normal", "high", "ultra"],
+                "options": [
+                    "normal",
+                    "high",
+                    "ultra"
+                ],
                 "default": "high",
                 "hint": "回退建议使用 high/normal 以降低复杂页面的内存消耗和超时概率。"
             },
@@ -263,7 +322,10 @@
             "t2i_font_source": {
                 "type": "string",
                 "description": "t2i 渲染环境切换",
-                "options": ["Mainland", "Overseas"],
+                "options": [
+                    "Mainland",
+                    "Overseas"
+                ],
                 "default": "Overseas",
                 "hint": "字体和静态资源的访问环境，内地（Mainland）、海外（Overseas），切换环境会自动应用下方对应的镜像站地址、语言标识(简体中文/繁体中文)及字体优先级。（实测 Overseas 也可以正常渲染简体中文）"
             },
@@ -723,7 +785,9 @@
                 "type": "list",
                 "description": "马赛克词组列表",
                 "default": [],
-                "items": {"type": "string"},
+                "items": {
+                    "type": "string"
+                },
                 "hint": "填写要遮罩的完整字面词组。按长度从长到短匹配。不要填过短的常用单字，以免大面积误伤报告文本。"
             },
             "mosaic_character": {

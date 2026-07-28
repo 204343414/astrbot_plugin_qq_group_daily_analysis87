@@ -48,6 +48,7 @@ class QQOfficialAdapter(PlatformAdapter):
         self.bot_self_ids = [str(item) for item in ids if item]
         self.appid = self._resolve_appid(config or {})
         self._markdown_msg_seq = random.randint(1, 10000)
+        self.last_send_error = ""
 
     @property
     def platform_id(self) -> str:
@@ -289,7 +290,9 @@ class QQOfficialAdapter(PlatformAdapter):
         return result
 
     async def _send_chain(self, group_id: str, chain: Any) -> bool:
+        self.last_send_error = ""
         if not self._context:
+            self.last_send_error = "missing_context"
             logger.error("[QQOfficial] 未设置 context，无法发送消息")
             return False
         try:
@@ -301,8 +304,12 @@ class QQOfficialAdapter(PlatformAdapter):
             if callable(remember_scene):
                 remember_scene(str(group_id), "group")
             umo = f"{self.platform_id}:GroupMessage:{group_id}"
-            return bool(await self._context.send_message(umo, chain))
+            sent = bool(await self._context.send_message(umo, chain))
+            if not sent:
+                self.last_send_error = "send_message_returned_false"
+            return sent
         except Exception as exc:
+            self.last_send_error = str(exc)[:500] or type(exc).__name__
             logger.error("[QQOfficial] 发送消息失败: %s", exc, exc_info=True)
             return False
 

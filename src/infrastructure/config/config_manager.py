@@ -763,6 +763,16 @@ class ConfigManager:
         """图片报告生成或发送失败时的固定短提示。"""
         return str(self._get_group("basic").get("image_failure_message", "卡片渲染失败惹"))
 
+    def get_qq_official_safe_report_caption(self) -> str:
+        """QQ 官方群分析图片前的固定安全说明。"""
+        return str(
+            self._get_group("qq_official_beta").get(
+                "safe_report_caption",
+                "基于聊天记录总结的今日群分析报告已生成（仅供参考）。如果卡片无内容，请确认是否给 Bot 开启了获取群消息的权限。",
+            )
+            or "基于聊天记录总结的今日群分析报告已生成（仅供参考）。如果卡片无内容，请确认是否给 Bot 开启了获取群消息的权限。"
+        )
+
     def set_show_report_caption(self, enabled: bool):
         """设置是否发送 \"📊 每日群聊分析报告已生成\" 前缀文字。"""
         self._ensure_group("basic")["show_report_caption"] = enabled

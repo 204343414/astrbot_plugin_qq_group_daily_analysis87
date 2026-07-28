@@ -56,12 +56,14 @@ class ReportDispatcher:
             "html": self._dispatch_html,
             "text": self._dispatch_text,
         }
+        success_any = False
         for fmt in output_formats:
             handler = dispatch_map.get(fmt)
             if handler:
-                await handler(group_id, analysis_result, platform_id)
+                success_any = bool(await handler(group_id, analysis_result, platform_id)) or success_any
 
-        logger.info(f"[{trace_id}] 群 {group_id} 的报告分发完成")
+        logger.info(f"[{trace_id}] 群 {group_id} 的报告分发完成 success={success_any}")
+        return success_any
 
     async def _dispatch_image(
         self, group_id: str, analysis_result: dict[str, Any], platform_id: str | None
@@ -100,11 +102,14 @@ class ReportDispatcher:
         # 4. 发送图片
         sent = False
         if image_url:
-            caption = (
-                TraceContext.make_report_caption()
-                if self.config_manager.get_show_report_caption()
-                else ""
-            )
+            if self._is_qq_official(platform_id):
+                caption = self.config_manager.get_qq_official_safe_report_caption()
+            else:
+                caption = (
+                    TraceContext.make_report_caption()
+                    if self.config_manager.get_show_report_caption()
+                    else ""
+                )
             sent = await self.message_sender.send_image_smart(
                 group_id, image_url, caption, platform_id
             )
@@ -116,7 +121,12 @@ class ReportDispatcher:
         if sent:
             return True
 
-        # 6. 最终回退：如果图片发送失败（包括生成失败或发送接口报错），直接尝试发送文本报告
+        # 6. 最终回退：如果图片发送失败（包括生成失败或发送接口报错），
+        # 根据配置决定是否降级发送文本。QQ 官方场景默认禁止文本兜底，
+        # 避免把高风险摘要原文直接发到群里。
+        if self.config_manager.get_disable_text_report_fallback():
+            logger.warning(f"[{trace_id}] Image dispatch failed; text fallback disabled.")
+            return False
         logger.warning(
             f"[{trace_id}] Image dispatch failed, falling back to text report."
         )
@@ -199,6 +209,9 @@ class ReportDispatcher:
             if sent:
                 return True
 
+        if self.config_manager.get_disable_text_report_fallback():
+            logger.warning(f"[{trace_id}] HTML dispatch failed; text fallback disabled.")
+            return False
         logger.warning(
             f"[{trace_id}] HTML dispatch failed, falling back to text report."
         )

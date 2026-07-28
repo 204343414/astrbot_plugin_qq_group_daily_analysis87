@@ -328,6 +328,29 @@ class AutoScheduler:
 
             result.append((group_id, platform_id, effective_mode))
 
+        # QQ Official 专精动态订阅：订阅是运行态授权，故意绕过
+        # basic.group_list 和 auto_analysis.scheduled_group_list。
+        if self.plugin_instance and hasattr(
+            self.plugin_instance, "get_daily_subscription_targets"
+        ):
+            try:
+                existing = {(str(gid), str(pid), str(mode)) for gid, pid, mode in result}
+                dynamic_targets = await self.plugin_instance.get_daily_subscription_targets(
+                    mode_filter=mode_filter
+                )
+                for gid, pid, mode in dynamic_targets:
+                    key = (str(gid), str(pid), str(mode))
+                    if key not in existing:
+                        result.append((str(gid), str(pid), str(mode)))
+                        existing.add(key)
+                if dynamic_targets:
+                    logger.info(
+                        "动态订阅目标解析完成：%d 个 QQ 官方每日群分析订阅",
+                        len(dynamic_targets),
+                    )
+            except Exception as exc:
+                logger.warning("读取 QQ 官方每日群分析订阅失败: %s", exc, exc_info=True)
+
         logger.info(
             f"分层调度解析完成：符合条件的群组共 {len(result)} 个"
             + (f" (模式过滤: {mode_filter})" if mode_filter else "")
@@ -424,14 +447,16 @@ class AutoScheduler:
         """为指定群执行自动分析（带超时控制）"""
         try:
             # 为每个群聊设置独立的超时时间，适当放宽到 30 分钟以支持大型批次
-            await asyncio.wait_for(
+            return await asyncio.wait_for(
                 self._perform_auto_analysis_for_group(group_id, target_platform_id),
                 timeout=1800,
             )
         except asyncio.TimeoutError:
             logger.error(f"群 {group_id} 分析超时（30分钟），跳过该群分析")
+            return {"success": False, "reason": "timeout"}
         except Exception as e:
             logger.error(f"群 {group_id} 分析任务执行失败: {e}")
+            return {"success": False, "reason": str(e)}
 
     async def _perform_auto_analysis_for_group(
         self, group_id: str, target_platform_id: str | None = None
@@ -444,7 +469,7 @@ class AutoScheduler:
             TraceContext.set(trace_id)
 
             if self._terminating:
-                return
+                return {"success": False, "reason": "terminating"}
 
             logger.info(
                 f"开始为群 {group_id} 执行自动分析 (Platform: {target_platform_id or 'Auto'})"
@@ -453,7 +478,7 @@ class AutoScheduler:
             # 检查平台状态 (BotManager 为基础设施层，用于获取平台就绪状态)
             if not self.bot_manager.is_ready_for_auto_analysis():
                 logger.warning(f"群 {group_id} 自动分析跳过：bot管理器未就绪")
-                return
+                return {"success": False, "reason": "bot_not_ready"}
 
             # 委派给应用层服务执行核心用例
             # AnalysisApplicationService 内部已处理群锁 (group_lock)
@@ -471,15 +496,41 @@ class AutoScheduler:
             adapter = result["adapter"]
 
             # 调度导出并发送报告
-            await self.report_dispatcher.dispatch(
+            effective_platform_id = (
+                adapter.platform_id if hasattr(adapter, "platform_id") else target_platform_id
+            )
+            if hasattr(adapter, "last_send_error"):
+                adapter.last_send_error = ""
+            sent = await self.report_dispatcher.dispatch(
                 group_id,
                 analysis_result,
-                adapter.platform_id
-                if hasattr(adapter, "platform_id")
-                else target_platform_id,
+                effective_platform_id,
             )
+            if self.plugin_instance and hasattr(
+                self.plugin_instance, "is_daily_subscription_target"
+            ):
+                is_dynamic_subscription = await self.plugin_instance.is_daily_subscription_target(
+                    effective_platform_id, group_id
+                )
+                if is_dynamic_subscription:
+                    if sent:
+                        await self.plugin_instance.mark_daily_subscription_delivery(
+                            effective_platform_id, group_id, True
+                        )
+                    else:
+                        send_error = str(getattr(adapter, "last_send_error", "") or "")
+                        await self.plugin_instance.mark_daily_subscription_delivery(
+                            effective_platform_id, group_id, False, send_error
+                        )
+                        if send_error:
+                            await self.plugin_instance.auto_unsubscribe_daily_subscription(
+                                effective_platform_id,
+                                group_id,
+                                f"AUTO_DELIVERY_FAILED: {send_error[:120]}",
+                            )
 
-            logger.info(f"群 {group_id} 自动分析任务执行成功")
+            logger.info(f"群 {group_id} 自动分析任务执行成功 sent={sent}")
+            return {"success": bool(sent), "reason": "sent" if sent else "dispatch_failed"}
 
         except DuplicateGroupTaskError:
             # group_lock 抛出的 DuplicateGroupTaskError 表示任务正在运行，优雅跳过
@@ -711,10 +762,13 @@ class AutoScheduler:
                 f"⬆️ 群 {group_id} 回退到传统全量分析 "
                 f"(Platform: {target_platform_id or 'Auto'})"
             )
-            await self._perform_auto_analysis_for_group_with_timeout(
+            result = await self._perform_auto_analysis_for_group_with_timeout(
                 group_id, target_platform_id
             )
-            return {"success": True, "fallback": True}
+            if isinstance(result, dict):
+                result["fallback"] = True
+                return result
+            return {"success": bool(result), "fallback": True}
         except Exception as fallback_err:
             logger.error(
                 f"群 {group_id} 回退传统分析也失败: {fallback_err}",
@@ -760,13 +814,36 @@ class AutoScheduler:
             analysis_result = result["analysis_result"]
             adapter = result["adapter"]
 
-            await self.report_dispatcher.dispatch(
+            effective_platform_id = (
+                adapter.platform_id if hasattr(adapter, "platform_id") else target_platform_id
+            )
+            if hasattr(adapter, "last_send_error"):
+                adapter.last_send_error = ""
+            sent = await self.report_dispatcher.dispatch(
                 group_id,
                 analysis_result,
-                adapter.platform_id
-                if hasattr(adapter, "platform_id")
-                else target_platform_id,
+                effective_platform_id,
             )
+            if (
+                self.plugin_instance
+                and hasattr(self.plugin_instance, "is_daily_subscription_target")
+                and await self.plugin_instance.is_daily_subscription_target(effective_platform_id, group_id)
+            ):
+                if sent:
+                    await self.plugin_instance.mark_daily_subscription_delivery(
+                        effective_platform_id, group_id, True
+                    )
+                else:
+                    send_error = str(getattr(adapter, "last_send_error", "") or "")
+                    await self.plugin_instance.mark_daily_subscription_delivery(
+                        effective_platform_id, group_id, False, send_error
+                    )
+                    if send_error:
+                        await self.plugin_instance.auto_unsubscribe_daily_subscription(
+                            effective_platform_id,
+                            group_id,
+                            f"INCREMENTAL_DELIVERY_FAILED: {send_error[:120]}",
+                        )
 
             # 清理过期批次（保留 2 倍窗口范围的数据作为缓冲）
             try:

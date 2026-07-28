@@ -475,3 +475,42 @@ MIT License
 
 
 欢迎提交Issue和Pull Request来改进这个插件！
+
+## QQ 官方内测每日群分析订阅
+
+本仓库的 QQ 官方 Bot 专精逻辑不依赖远程拉取历史消息：QQ 官方公开能力主要是消息/生命周期事件推送，插件只分析 AstrBot 本地已经缓存到的群消息。因此如果报告内容为空或很少，请确认 QQ 官方 Bot 已获得“获取群消息/全部群消息”相关权限。
+
+### 指令
+
+```text
+/群分析 指纹认证
+/群分析 每日订阅
+/群分析 取消每日
+```
+
+- `/群分析 指纹认证`：必须在配置的内测群执行。认证成功后，该用户 OpenID 会长期记录。
+- `/群分析 每日订阅`：仅 QQ 官方群可用；调用者必须已完成指纹认证。插件会先发送一条主动消息作为探测，探测成功才写入每日订阅。
+- `/群分析 取消每日`：取消当前群的每日群分析订阅。
+- `/群分析`：手动分析改为“每个平台/每个群/每天最多成功一次”，不再按每个用户分别计数；只有图片确认发送成功后才计数。
+
+### 配置
+
+新增 `qq_official_beta` 配置组：
+
+- `beta_group_umos`：内测群完整 UMO，例如 `default_102824564:GroupMessage:GROUP_OPENID`。
+- `beta_group_openids`：内测群 `group_openid`，用于兼容只填群 OpenID 的场景。
+- `subscription_probe_message`：每日订阅成功时发送的主动消息，同时作为主动消息权限探测。
+- `subscription_probe_fail_message`：探测失败时的尽力提示。
+- `safe_report_caption`：QQ 官方报告图片前的固定说明。
+
+每日订阅状态单独保存在插件数据目录，不污染 `auto_analysis.scheduled_group_list`。动态订阅会绕过 `basic.group_list` 静态群白名单。
+
+### 自动退订
+
+插件安装了运行时 QQ 官方群生命周期桥，监听：
+
+- `GROUP_DEL_ROBOT`：Bot 被移出群时清理该群订阅。
+- `GROUP_MSG_REJECT`：群关闭主动消息推送时取消该群订阅。
+- `GROUP_MSG_RECEIVE`：记录群已开启主动消息推送。
+
+此外，定时发送日报时如果出现主动发送失败，也会记录失败并在明确发送异常时自动取消该群订阅。

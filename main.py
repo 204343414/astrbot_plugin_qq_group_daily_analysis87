@@ -6,13 +6,14 @@
 """
 
 import asyncio
+import time
 import os
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig
 from astrbot.api import logger as astrbot_logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.event.filter import PermissionType
 from astrbot.api.star import Context, Star, StarTools
 
@@ -43,6 +44,9 @@ from .src.infrastructure.persistence.manual_analysis_quota_store import (
 from .src.infrastructure.persistence.platform_group_registry import (
     PlatformGroupRegistry,
 )
+from .src.infrastructure.persistence.qq_official_subscription_store import (
+    QQOfficialSubscriptionStore,
+)
 from .src.infrastructure.platform.bot_manager import BotManager
 from .src.infrastructure.platform.template_preview import (
     TelegramTemplatePreviewHandler,
@@ -55,6 +59,7 @@ from .src.shared.constants import PLUGIN_NAME
 from .src.shared.trace_context import TraceContext, TraceLogFilter
 from .src.utils.logger import logger
 from .src.utils.resilience import GlobalRateLimiter
+from . import qq_group_event_bridge
 
 
 class GroupDailyAnalysis(Star):
@@ -95,6 +100,7 @@ class GroupDailyAnalysis(Star):
 
         plugin_data_dir = StarTools.get_data_dir(PLUGIN_NAME)
         self.manual_analysis_quota_store = ManualAnalysisQuotaStore(plugin_data_dir)
+        self.qq_official_subscription_store = QQOfficialSubscriptionStore(plugin_data_dir)
         self._manual_analysis_inflight: set[tuple[str, str, str]] = set()
 
         self.report_generator = ReportGenerator(self.config_manager, plugin_data_dir)
@@ -172,6 +178,8 @@ class GroupDailyAnalysis(Star):
         except RuntimeError:
             self._init_task = None
 
+        qq_group_event_bridge.install(PLUGIN_NAME, self._handle_qq_group_lifecycle_event)
+
     # orchestrators 缓存已移至 应用层逻辑 (分析服务) 或 暂时移除以简化。
     # 如果需要高性能缓存，后续可由 AnalysisApplicationService 内部维护。
 
@@ -239,6 +247,7 @@ class GroupDailyAnalysis(Star):
 
     async def terminate(self):
         """插件被卸载/停用时调用，清理资源"""
+        qq_group_event_bridge.detach(PLUGIN_NAME)
         if self._terminating:
             return
         self._terminating = True
@@ -335,6 +344,219 @@ class GroupDailyAnalysis(Star):
     async def get_seen_group_ids(self, platform_id: str | None = None) -> list[str]:
         """读取任意事件驱动平台已经见过的群组。"""
         return await self.platform_group_registry.get_all_group_ids(platform_id)
+
+    # ==================== QQ Official 专精订阅/内测能力 ====================
+
+    @staticmethod
+    def _parse_config_list(value) -> set[str]:
+        if isinstance(value, (list, tuple, set)):
+            values = value
+        else:
+            import re
+
+            values = re.split(r"[\s,，;；]+", str(value or ""))
+        return {str(item).strip() for item in values if str(item).strip()}
+
+    def _qq_beta_group_umos(self) -> set[str]:
+        value = (self.config.get("qq_official_beta", {}) or {}).get("beta_group_umos", [])
+        return self._parse_config_list(value)
+
+    def _qq_beta_group_openids(self) -> set[str]:
+        value = (self.config.get("qq_official_beta", {}) or {}).get("beta_group_openids", [])
+        return self._parse_config_list(value)
+
+    def _subscription_probe_message(self) -> str:
+        return str(
+            (self.config.get("qq_official_beta", {}) or {}).get(
+                "subscription_probe_message",
+                "✅ 群分析每日订阅成功，今后将在设定时间向本群推送每日群分析报告。",
+            )
+            or "✅ 群分析每日订阅成功，今后将在设定时间向本群推送每日群分析报告。"
+        )
+
+    def _subscription_probe_fail_message(self) -> str:
+        return str(
+            (self.config.get("qq_official_beta", {}) or {}).get(
+                "subscription_probe_fail_message",
+                "订阅失败：主动消息探测未通过，已取消本群每日群分析订阅。",
+            )
+            or "订阅失败：主动消息探测未通过，已取消本群每日群分析订阅。"
+        )
+
+    def _safe_report_caption(self) -> str:
+        return str(
+            (self.config.get("qq_official_beta", {}) or {}).get(
+                "safe_report_caption",
+                "基于聊天记录总结的今日群分析报告已生成（仅供参考）。如果卡片无内容，请确认是否给 Bot 开启了获取群消息的权限。",
+            )
+            or "基于聊天记录总结的今日群分析报告已生成（仅供参考）。如果卡片无内容，请确认是否给 Bot 开启了获取群消息的权限。"
+        )
+
+    def _is_qq_official_event(self, event: AstrMessageEvent) -> bool:
+        try:
+            return str(event.get_platform_name()).lower() in {
+                "qq_official",
+                "qq_official_webhook",
+            }
+        except Exception:
+            return False
+
+    def _event_origin_parts(self, event: AstrMessageEvent) -> tuple[str, str, str]:
+        origin = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        platform_id = self._get_platform_id_from_event(event) or ""
+        group_id = self._get_group_id_from_event(event) or ""
+        if not origin and platform_id and group_id:
+            origin = f"{platform_id}:GroupMessage:{group_id}"
+        if not platform_id and origin:
+            platform_id = origin.split(":", 1)[0]
+        if not group_id and origin and ":" in origin:
+            group_id = origin.rsplit(":", 1)[-1]
+        return origin, str(platform_id), str(group_id)
+
+    @staticmethod
+    def _event_sender_id(event: AstrMessageEvent) -> str:
+        try:
+            value = event.get_sender_id()
+            if value:
+                return str(value).strip()
+        except Exception:
+            pass
+        sender = getattr(getattr(event, "message_obj", None), "sender", None)
+        return str(getattr(sender, "user_id", "") or "").strip()
+
+    def _is_beta_group_event(self, event: AstrMessageEvent) -> bool:
+        origin, _platform_id, group_id = self._event_origin_parts(event)
+        return bool(
+            (origin and origin in self._qq_beta_group_umos())
+            or (group_id and group_id in self._qq_beta_group_openids())
+        )
+
+    async def get_daily_subscription_targets(
+        self, mode_filter: str | None = None
+    ) -> list[tuple[str, str, str]]:
+        if mode_filter and mode_filter != "traditional":
+            return []
+        targets = []
+        for _origin, platform_id, group_id, _meta in (
+            await self.qq_official_subscription_store.subscribed_targets()
+        ):
+            targets.append((group_id, platform_id, "traditional"))
+        return targets
+
+    async def is_daily_subscription_target(
+        self, platform_id: str | None, group_id: str
+    ) -> bool:
+        if not platform_id or not group_id:
+            return False
+        origin = f"{platform_id}:GroupMessage:{group_id}"
+        return await self.qq_official_subscription_store.is_subscribed(origin)
+
+    async def mark_daily_subscription_delivery(
+        self, platform_id: str | None, group_id: str, success: bool, error: str = ""
+    ) -> None:
+        if not platform_id or not group_id:
+            return
+        origin = f"{platform_id}:GroupMessage:{group_id}"
+        await self.qq_official_subscription_store.mark_delivery(origin, success, error)
+
+    async def auto_unsubscribe_daily_subscription(
+        self, platform_id: str | None, group_id: str, reason: str
+    ) -> None:
+        if not platform_id or not group_id:
+            return
+        origin = f"{platform_id}:GroupMessage:{group_id}"
+        removed = await self.qq_official_subscription_store.unsubscribe(origin, reason)
+        if removed:
+            logger.warning("[群分析订阅] 已自动取消每日订阅: %s reason=%s", origin, reason)
+
+    async def _send_subscription_probe(self, origin: str) -> bool:
+        try:
+            result = await self.context.send_message(
+                origin, MessageChain().message(self._subscription_probe_message())
+            )
+            return bool(result)
+        except Exception as exc:
+            logger.warning("[群分析订阅] 主动消息探测失败 %s: %s", origin, exc)
+            return False
+
+    async def _handle_fingerprint_command(self, event: AstrMessageEvent):
+        if not self._is_qq_official_event(event):
+            yield event.plain_result("❌ 指纹认证仅支持 QQ 官方群。")
+            return
+        if not self._is_beta_group_event(event):
+            yield event.plain_result("❌ 请在指定内测群内执行 /群分析 指纹认证。")
+            return
+        origin, _platform_id, group_id = self._event_origin_parts(event)
+        sender_id = self._event_sender_id(event)
+        if not sender_id:
+            yield event.plain_result("❌ 无法识别当前用户 OpenID，指纹认证失败。")
+            return
+        await self.qq_official_subscription_store.certify(sender_id, origin, group_id)
+        yield event.plain_result("✅ 指纹认证成功。你可以在你是群主的群，管理每日群分析了")
+
+    async def _handle_daily_subscribe_command(self, event: AstrMessageEvent):
+        if not self._is_qq_official_event(event):
+            yield event.plain_result("❌ 每日群分析订阅仅支持 QQ 官方群。")
+            return
+        origin, platform_id, group_id = self._event_origin_parts(event)
+        if not origin or not group_id:
+            yield event.plain_result("❌ 请在 QQ 官方群内使用此命令。")
+            return
+        sender_id = self._event_sender_id(event)
+        if not await self.qq_official_subscription_store.is_certified(sender_id):
+            yield event.plain_result("❌ 请先在指定内测群内执行 /群分析 指纹认证。")
+            return
+        if await self.qq_official_subscription_store.is_subscribed(origin):
+            yield event.plain_result("该群已订阅每日群分析，无需重复订阅。")
+            return
+        if not await self._send_subscription_probe(origin):
+            await self.qq_official_subscription_store.unsubscribe(origin, "PROACTIVE_PROBE_FAILED")
+            yield event.plain_result(self._subscription_probe_fail_message())
+            return
+        await self.qq_official_subscription_store.subscribe(
+            origin, platform_id, group_id, sender_id
+        )
+        logger.info("[群分析订阅] 当前群订阅并通过主动消息探测: %s", origin)
+
+    async def _handle_daily_unsubscribe_command(self, event: AstrMessageEvent):
+        if not self._is_qq_official_event(event):
+            yield event.plain_result("❌ 每日群分析订阅仅支持 QQ 官方群。")
+            return
+        origin, _platform_id, _group_id = self._event_origin_parts(event)
+        removed = await self.qq_official_subscription_store.unsubscribe(origin, "manual")
+        if removed:
+            yield event.plain_result("✅ 已取消本群每日群分析订阅。")
+        else:
+            yield event.plain_result("该群当前没有订阅每日群分析。")
+
+    async def _handle_qq_group_lifecycle_event(self, event_name: str, client, event) -> None:
+        group_openid = str(getattr(event, "group_openid", "") or "").strip()
+        platform = getattr(client, "platform", None)
+        if not group_openid or platform is None:
+            return
+        origin = f"{platform.meta().id}:GroupMessage:{group_openid}"
+        op_member_openid = str(getattr(event, "op_member_openid", "") or "").strip()
+        if event_name == "group_del_robot":
+            removed = await self.qq_official_subscription_store.remove(
+                origin, "GROUP_DEL_ROBOT"
+            )
+            if removed:
+                logger.warning("[群分析订阅] Bot 被移出群，已清空每日订阅: %s", origin)
+            return
+        if event_name == "group_msg_reject":
+            await self.qq_official_subscription_store.mark_active_message(
+                origin, False, op_member_openid
+            )
+            removed = await self.qq_official_subscription_store.unsubscribe(
+                origin, "GROUP_MSG_REJECT"
+            )
+            if removed:
+                logger.warning("[群分析订阅] 群关闭主动消息，已取消每日订阅: %s", origin)
+            return
+        if event_name == "group_msg_receive":
+            await self.qq_official_subscription_store.mark_active_message(
+                origin, True, op_member_openid
+            )
 
     def _get_group_id_from_event(self, event: AstrMessageEvent) -> str | None:
         """从消息事件中安全获取群组 ID"""
@@ -529,6 +751,18 @@ class GroupDailyAnalysis(Star):
             if command_arg.lower() in {"debug", "诊断"}:
                 yield event.plain_result(self._build_group_analysis_debug_report())
                 return
+            if command_arg in {"指纹认证", "fingerprint", "认证"}:
+                async for result in self._handle_fingerprint_command(event):
+                    yield result
+                return
+            if command_arg in {"每日订阅", "订阅每日", "订阅"}:
+                async for result in self._handle_daily_subscribe_command(event):
+                    yield result
+                return
+            if command_arg in {"取消每日", "每日取消", "取消订阅"}:
+                async for result in self._handle_daily_unsubscribe_command(event):
+                    yield result
+                return
             analysis_days: int | None = None
             if command_arg:
                 try:
@@ -548,28 +782,21 @@ class GroupDailyAnalysis(Star):
                 check_target = f"{platform_id}:GroupMessage:{group_id}"
 
             if not self.config_manager.is_group_allowed(check_target):
-                # Fallback checks (simple ID) are handled inside is_group_allowed logic if list item has no colon
-                # But if list item HAS colon, we need precise match.
-                # If prompt fails, try simple ID as fallback for permissive cases?
-                # No, config_manager.is_group_allowed already handles simple ID matching if whitelist item is simple ID.
-                yield event.plain_result("❌ 此群未启用日常分析功能")
-                return
+                # Dynamic QQ Official daily subscriptions are runtime state and
+                # intentionally bypass the static basic.group_list whitelist.
+                if not await self.qq_official_subscription_store.is_subscribed(str(check_target)):
+                    yield event.plain_result("❌ 此群未启用日常分析功能")
+                    return
 
-            # The external beta gate decides *who* may invoke this command.
-            # This plugin owns only its success-based per-user/per-group quota.
-            sender = getattr(getattr(event, "message_obj", None), "sender", None)
-            user_id = str(getattr(sender, "user_id", "") or "").strip()
-            if not user_id:
-                logger.warning("无法读取 /群分析 调用者 ID，拒绝执行以避免绕过配额")
-                yield event.plain_result("❌ 无法识别调用者身份")
-                return
-            quota_key = (str(platform_id), user_id, str(group_id))
+            # QQ Official 专精版的手动额度按“每个平台/每群/每天”统计，
+            # 不再按每个用户分别放行。失败不计数；图片确认发送成功后计数。
+            quota_key = (str(platform_id), "__group__", str(group_id))
             if quota_key in self._manual_analysis_inflight:
-                yield event.plain_result("📊 你在本群的群分析正在执行中，请稍后再试")
+                yield event.plain_result("📊 本群的群分析正在执行中，请稍后再试")
                 return
             daily_limit = self.config_manager.get_manual_analysis_daily_limit()
             if self.manual_analysis_quota_store.is_limit_reached(*quota_key, daily_limit):
-                yield event.plain_result("📊 你今天在本群的群分析次数已用完")
+                yield event.plain_result("📊 本群今天的群分析次数已用完")
                 return
             self._manual_analysis_inflight.add(quota_key)
 
@@ -717,17 +944,14 @@ class GroupDailyAnalysis(Star):
             )
 
             if image_url:
-                # Manual beta reports are sent as a bare image: no text caption.
-                sent = await adapter.send_image(group_id, image_url, caption="")
+                caption = self._safe_report_caption() if is_qq_official else ""
+                sent = await adapter.send_image(group_id, image_url, caption=caption)
                 if sent:
                     # Quota is charged only after the adapter confirms that the
                     # image was sent. Rendering/sending failure never consumes it.
-                    sender = getattr(getattr(event, "message_obj", None), "sender", None)
-                    user_id = str(getattr(sender, "user_id", "") or "").strip()
-                    if user_id:
-                        self.manual_analysis_quota_store.mark_success(
-                            str(platform_id), user_id, str(group_id)
-                        )
+                    self.manual_analysis_quota_store.mark_success(
+                        str(platform_id), "__group__", str(group_id)
+                    )
                     await self._try_upload_image(group_id, image_url, platform_id)
                     return  # 成功发送
 
