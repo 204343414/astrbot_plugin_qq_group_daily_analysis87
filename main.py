@@ -773,6 +773,15 @@ class GroupDailyAnalysis(Star):
                     yield event.plain_result("❌ 天数必须是正整数；诊断请使用 /群分析 debug")
                     return
 
+            # QQ Official 专精版：手动 /群分析 也必须先在内测群完成指纹认证。
+            # debug/诊断不跑 LLM 且不发报告，仍允许用于排障；订阅/取消/认证
+            # 已在上方单独处理。
+            if self._is_qq_official_event(event):
+                sender_id = self._event_sender_id(event)
+                if not await self.qq_official_subscription_store.is_certified(sender_id):
+                    yield event.plain_result("❌ 请先在指定内测群内执行 /群分析 指纹认证。")
+                    return
+
             # 更新bot实例
             self.bot_manager.update_from_event(event)
 
@@ -917,7 +926,7 @@ class GroupDailyAnalysis(Star):
         analysis_result = result["analysis_result"]
         adapter = result["adapter"]
         output_format = self.config_manager.get_output_format()[0]
-        is_qq_official = adapter.get_platform_name() == "qq_official"
+        is_qq_official = str(adapter.get_platform_name()).lower() in {"qq_official", "qq_official_webhook"}
 
         # 定义获取回调
         async def avatar_url_getter(user_id: str) -> str | None:
