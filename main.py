@@ -365,14 +365,69 @@ class GroupDailyAnalysis(Star):
         value = (self.config.get("qq_official_beta", {}) or {}).get("beta_group_openids", [])
         return self._parse_config_list(value)
 
-    def _subscription_probe_message(self) -> str:
-        return str(
+    def _subscription_probe_message(self, schedule_time: str) -> str:
+        template = str(
             (self.config.get("qq_official_beta", {}) or {}).get(
                 "subscription_probe_message",
-                "✅ 群分析每日订阅成功，今后将在设定时间向本群推送每日群分析报告。",
+                "✅ 群分析每日订阅成功，今后将在每日{time}时间左右向本群推送每日群分析报告。",
             )
-            or "✅ 群分析每日订阅成功，今后将在设定时间向本群推送每日群分析报告。"
+            or "✅ 群分析每日订阅成功，今后将在每日{time}时间左右向本群推送每日群分析报告。"
         )
+        if "{time}" in template:
+            return template.replace("{time}", schedule_time)
+        return f"{template}（当前推送时间：每日{schedule_time}左右）"
+
+    def _subscription_catch_up_minutes(self) -> int:
+        try:
+            return max(
+                0,
+                int(
+                    (self.config.get("qq_official_beta", {}) or {}).get(
+                        "subscription_catch_up_minutes", 10
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            return 10
+
+    @staticmethod
+    def _parse_subscription_time(value: str) -> str | None:
+        import re
+
+        text = str(value or "").strip().replace("：", ":")
+        match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", text)
+        if not match:
+            return None
+        return f"{int(match.group(1)):02d}:{int(match.group(2)):02d}"
+
+    @staticmethod
+    def _minutes_until_hhmm(schedule_time: str) -> int | None:
+        from datetime import datetime, timedelta
+
+        try:
+            hour_text, minute_text = schedule_time.split(":", 1)
+            now = datetime.now()
+            target = now.replace(
+                hour=int(hour_text), minute=int(minute_text), second=0, microsecond=0
+            )
+            if target <= now:
+                target += timedelta(days=1)
+            return max(0, int((target - now).total_seconds() // 60) + 1)
+        except Exception:
+            return None
+
+    def _subscription_usage_message(self, existing: dict | None = None) -> str:
+        if existing and existing.get("subscribed"):
+            schedule_time = str(existing.get("schedule_time") or "").strip()
+            remaining = self._minutes_until_hhmm(schedule_time) if schedule_time else None
+            if remaining is not None:
+                return (
+                    f"该群已订阅每日群分析，当前推送时间为每日{schedule_time}左右，"
+                    f"距离下次推送约 {remaining} 分钟。\n"
+                    f"如需修改时间，请输入 /群分析 每日订阅 HH:MM，例如 /群分析 每日订阅 23:00"
+                )
+            return "该群已订阅每日群分析。如需修改时间，请输入 /群分析 每日订阅 HH:MM。"
+        return "用法：/群分析 每日订阅 HH:MM，例如 /群分析 每日订阅 23:00"
 
     def _subscription_probe_fail_message(self) -> str:
         return str(
@@ -443,6 +498,30 @@ class GroupDailyAnalysis(Star):
             targets.append((group_id, platform_id, "traditional"))
         return targets
 
+    async def run_due_daily_subscriptions(self) -> None:
+        due_targets = await self.qq_official_subscription_store.claim_due_targets(
+            catch_up_minutes=self._subscription_catch_up_minutes()
+        )
+        if not due_targets:
+            return
+        logger.info("[群分析订阅] 每分钟检测命中 %d 个到期群", len(due_targets))
+        for _origin, platform_id, group_id, item in due_targets:
+            logger.info(
+                "[群分析订阅] 开始执行到期日报: platform=%s group=%s time=%s",
+                platform_id,
+                group_id,
+                item.get("schedule_time"),
+            )
+            try:
+                await self.auto_scheduler._perform_auto_analysis_for_group_with_timeout(
+                    group_id, platform_id
+                )
+            except Exception as exc:
+                logger.exception("[群分析订阅] 到期日报任务异常: %s", exc)
+                await self.mark_daily_subscription_delivery(
+                    platform_id, group_id, False, str(exc)
+                )
+
     async def is_daily_subscription_target(
         self, platform_id: str | None, group_id: str
     ) -> bool:
@@ -469,10 +548,10 @@ class GroupDailyAnalysis(Star):
         if removed:
             logger.warning("[群分析订阅] 已自动取消每日订阅: %s reason=%s", origin, reason)
 
-    async def _send_subscription_probe(self, origin: str) -> bool:
+    async def _send_subscription_probe(self, origin: str, schedule_time: str) -> bool:
         try:
             result = await self.context.send_message(
-                origin, MessageChain().message(self._subscription_probe_message())
+                origin, MessageChain().message(self._subscription_probe_message(schedule_time))
             )
             return bool(result)
         except Exception as exc:
@@ -494,7 +573,7 @@ class GroupDailyAnalysis(Star):
         await self.qq_official_subscription_store.certify(sender_id, origin, group_id)
         yield event.plain_result("✅ 指纹认证成功。你可以在你是群主的群，管理每日群分析了")
 
-    async def _handle_daily_subscribe_command(self, event: AstrMessageEvent):
+    async def _handle_daily_subscribe_command(self, event: AstrMessageEvent, time_text: str = ""):
         if not self._is_qq_official_event(event):
             yield event.plain_result("❌ 每日群分析订阅仅支持 QQ 官方群。")
             return
@@ -502,21 +581,27 @@ class GroupDailyAnalysis(Star):
         if not origin or not group_id:
             yield event.plain_result("❌ 请在 QQ 官方群内使用此命令。")
             return
+        existing = await self.qq_official_subscription_store.get_subscription(origin)
+        schedule_time = self._parse_subscription_time(time_text)
+        if not schedule_time:
+            yield event.plain_result(self._subscription_usage_message(existing))
+            return
         sender_id = self._event_sender_id(event)
         if not await self.qq_official_subscription_store.is_certified(sender_id):
             yield event.plain_result("❌ 请先在指定内测群内执行 /群分析 指纹认证。")
             return
-        if await self.qq_official_subscription_store.is_subscribed(origin):
-            yield event.plain_result("该群已订阅每日群分析，无需重复订阅。")
-            return
-        if not await self._send_subscription_probe(origin):
+        if not await self._send_subscription_probe(origin, schedule_time):
             await self.qq_official_subscription_store.unsubscribe(origin, "PROACTIVE_PROBE_FAILED")
             yield event.plain_result(self._subscription_probe_fail_message())
             return
         await self.qq_official_subscription_store.subscribe(
-            origin, platform_id, group_id, sender_id
+            origin, platform_id, group_id, sender_id, schedule_time
         )
-        logger.info("[群分析订阅] 当前群订阅并通过主动消息探测: %s", origin)
+        logger.info(
+            "[群分析订阅] 当前群订阅并通过主动消息探测: %s time=%s",
+            origin,
+            schedule_time,
+        )
 
     async def _handle_daily_unsubscribe_command(self, event: AstrMessageEvent):
         if not self._is_qq_official_event(event):
@@ -734,13 +819,21 @@ class GroupDailyAnalysis(Star):
 
     @filter.command(
         "群分析 每日订阅",
-        alias={"group_analysis subscribe", "群分析 订阅每日", "群分析 订阅"},
+        alias={
+            "group_analysis subscribe",
+            "group_analysis daily",
+            "群分析 订阅每日",
+            "群分析 订阅",
+            "群分析 每日分析",
+        },
         priority=100,
     )
-    async def group_analysis_daily_subscribe_registered(self, event: AstrMessageEvent):
-        """订阅当前 QQ 官方群的每日群分析。"""
+    async def group_analysis_daily_subscribe_registered(
+        self, event: AstrMessageEvent, time_text: str = ""
+    ):
+        """订阅当前 QQ 官方群的每日群分析。用法：/群分析 每日订阅 HH:MM"""
         event.stop_event()
-        async for result in self._handle_daily_subscribe_command(event):
+        async for result in self._handle_daily_subscribe_command(event, time_text):
             yield result
 
     @filter.command(
@@ -788,7 +881,7 @@ class GroupDailyAnalysis(Star):
                 async for result in self._handle_fingerprint_command(event):
                     yield result
                 return
-            if command_arg in {"每日订阅", "订阅每日", "订阅"}:
+            if command_arg in {"每日订阅", "订阅每日", "订阅", "每日分析"}:
                 async for result in self._handle_daily_subscribe_command(event):
                     yield result
                 return

@@ -211,14 +211,21 @@
             "subscription_probe_message": {
                 "type": "string",
                 "description": "订阅成功与主动消息探测文案",
-                "default": "✅ 群分析每日订阅成功，今后将在设定时间向本群推送每日群分析报告。",
-                "hint": "/群分析 每日订阅 会先发送这条主动消息作为权限探测；发送成功才写入订阅。"
+                "default": "✅ 群分析每日订阅成功，今后将在每日{time}时间左右向本群推送每日群分析报告。",
+                "hint": "必须包含 {time} 占位符时会替换为订阅时间；/群分析 每日订阅 会先发送这条主动消息作为权限探测，发送成功才写入订阅。"
             },
             "subscription_probe_fail_message": {
                 "type": "string",
                 "description": "主动消息探测失败提示",
                 "default": "订阅失败：主动消息探测未通过，已取消本群每日群分析订阅。",
                 "hint": "普通命令场景下探测失败时尽力回复；如果由 type=1 主动回调触发且本身无主动消息权限，可能无法送达。"
+            },
+            "subscription_catch_up_minutes": {
+                "type": "int",
+                "description": "订阅任务补跑窗口（分钟）",
+                "default": 10,
+                "min": 0,
+                "hint": "每分钟检测动态订阅。若到点时 AstrBot 正在重启，允许在该分钟数内补跑；0 表示只在精确分钟触发。"
             },
             "safe_report_caption": {
                 "type": "string",

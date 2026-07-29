@@ -151,11 +151,16 @@ class AutoScheduler:
         # 但 schedule_jobs 意味着插件仍在运行；因此需要重置此标志位
         self._terminating = False
 
-        if not self.config_manager.is_auto_analysis_enabled():
-            logger.info("定时分析名单为空且为白名单模式，不注册定时任务。")
-            return
-
         scheduler = context.cron_manager.scheduler
+
+        # QQ Official 动态订阅使用独立的每分钟本地检测器，不能依赖
+        # auto_analysis.scheduled_group_list 是否非空；否则 “白名单+空列表”
+        # 会导致订阅成功但没有任何 cron 唤醒。
+        self._schedule_qq_official_subscription_tick(scheduler)
+
+        if not self.config_manager.is_auto_analysis_enabled():
+            logger.info("定时分析名单为空且为白名单模式，不注册静态定时任务。")
+            return
 
         # 1. 注册核心报告生成任务（涵盖全量分析与增量总结报告）
         # 每个配置的时间点都会触发一次解析
@@ -168,6 +173,38 @@ class AutoScheduler:
             self._schedule_incremental_cron_jobs(scheduler)
         else:
             logger.info("增量分析总开关未启用，仅执行传统定时全量分析。")
+
+    def _schedule_qq_official_subscription_tick(self, scheduler):
+        if not self.plugin_instance or not hasattr(
+            self.plugin_instance, "run_due_daily_subscriptions"
+        ):
+            return
+        job_id = "qq_official_daily_analysis_subscription_tick"
+        try:
+            scheduler.add_job(
+                self._run_qq_official_subscription_tick,
+                trigger=CronTrigger(second=0),
+                id=job_id,
+                replace_existing=True,
+                misfire_grace_time=30,
+                max_instances=1,
+            )
+            self.scheduler_job_ids.append(job_id)
+            logger.info("已注册 QQ 官方每日群分析订阅每分钟检测任务")
+        except Exception as e:
+            logger.error(f"注册 QQ 官方订阅检测任务失败: {e}")
+
+    async def _run_qq_official_subscription_tick(self):
+        if self._terminating:
+            return
+        if not self.plugin_instance or not hasattr(
+            self.plugin_instance, "run_due_daily_subscriptions"
+        ):
+            return
+        try:
+            await self.plugin_instance.run_due_daily_subscriptions()
+        except Exception as e:
+            logger.error(f"QQ 官方每日群分析订阅检测失败: {e}", exc_info=True)
 
     def _schedule_report_time_jobs(self, scheduler):
         """在配置的时间点注册报告生成任务。

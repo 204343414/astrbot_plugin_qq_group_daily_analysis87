@@ -484,7 +484,7 @@ MIT License
 
 ```text
 /群分析 指纹认证
-/群分析 每日订阅
+/群分析 每日订阅 HH:MM
 /群分析 取消每日
 ```
 
@@ -499,8 +499,9 @@ MIT License
 
 - `beta_group_umos`：内测群完整 UMO，例如 `default_102824564:GroupMessage:GROUP_OPENID`。
 - `beta_group_openids`：内测群 `group_openid`，用于兼容只填群 OpenID 的场景。
-- `subscription_probe_message`：每日订阅成功时发送的主动消息，同时作为主动消息权限探测。
+- `subscription_probe_message`：每日订阅成功时发送的主动消息，同时作为主动消息权限探测。支持 `{time}` 占位符。
 - `subscription_probe_fail_message`：探测失败时的尽力提示。
+- `subscription_catch_up_minutes`：每分钟检测动态订阅时允许的补跑窗口，默认 10 分钟。
 - `safe_report_caption`：QQ 官方报告图片前的固定说明。
 
 每日订阅状态单独保存在插件数据目录，不污染 `auto_analysis.scheduled_group_list`。动态订阅会绕过 `basic.group_list` 静态群白名单。

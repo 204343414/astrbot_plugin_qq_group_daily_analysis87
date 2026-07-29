@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,7 @@ class QQOfficialSubscriptionStore:
         platform_id: str,
         group_openid: str,
         member_openid: str,
+        schedule_time: str,
     ) -> None:
         origin = str(origin or "").strip()
         if not origin:
@@ -113,23 +115,38 @@ class QQOfficialSubscriptionStore:
             prior = self._data["subscriptions"].get(origin)
             if not isinstance(prior, dict):
                 prior = {}
+            old_time = str(prior.get("schedule_time") or "")
             prior.update(
                 {
                     "subscribed": True,
                     "platform_id": str(platform_id or ""),
                     "group_openid": str(group_openid or ""),
                     "subscribed_by": str(member_openid or ""),
+                    "schedule_time": str(schedule_time or ""),
                     "subscribed_at": prior.get("subscribed_at") or now,
+                    "updated_at": now,
                     "last_probe_at": now,
                     "last_seen_at": now,
                     "last_delivery": "NEVER",
                     "last_error": "",
                 }
             )
+            if old_time and old_time != schedule_time:
+                # Allow a same-day run at the new time if the old time was
+                # already claimed today.
+                prior.pop("last_attempt_date", None)
             prior.pop("unsubscribed_reason", None)
             prior.pop("unsubscribed_at", None)
             self._data["subscriptions"][origin] = prior
             self._write_atomic(self._data)
+
+    async def get_subscription(self, origin: str) -> dict[str, Any] | None:
+        origin = str(origin or "").strip()
+        if not origin:
+            return None
+        async with self._lock:
+            item = self._data["subscriptions"].get(origin)
+            return dict(item) if isinstance(item, dict) else None
 
     async def unsubscribe(self, origin: str, reason: str = "manual") -> bool:
         origin = str(origin or "").strip()
@@ -164,9 +181,12 @@ class QQOfficialSubscriptionStore:
             item = self._data["subscriptions"].get(origin)
             if not isinstance(item, dict):
                 return
+            today = datetime.now().date().isoformat()
             item["last_delivery"] = "SUCCESS" if success else "FAILED"
             item["last_delivery_at"] = int(time.time())
             item["last_error"] = str(error or "")[:500]
+            if success:
+                item["last_success_date"] = today
             self._write_atomic(self._data)
 
     async def mark_active_message(self, origin: str, enabled: bool, operator_openid: str = "") -> None:
@@ -193,13 +213,61 @@ class QQOfficialSubscriptionStore:
             for origin, item in self._data["subscriptions"].items():
                 if not isinstance(item, dict) or not bool(item.get("subscribed", False)):
                     continue
-                platform_id = str(item.get("platform_id") or "")
-                group_openid = str(item.get("group_openid") or "")
-                if not platform_id or not group_openid:
-                    parts = str(origin).split(":", 2)
-                    if len(parts) == 3:
-                        platform_id = platform_id or parts[0]
-                        group_openid = group_openid or parts[2]
-                if platform_id and group_openid:
-                    result.append((str(origin), platform_id, group_openid, dict(item)))
+                parsed = self._target_from_item(origin, item)
+                if parsed:
+                    result.append((*parsed, dict(item)))
             return result
+
+    async def claim_due_targets(
+        self,
+        now: datetime | None = None,
+        catch_up_minutes: int = 10,
+    ) -> list[tuple[str, str, str, dict[str, Any]]]:
+        now = now or datetime.now()
+        today = now.date().isoformat()
+        catch_up = max(0, int(catch_up_minutes))
+        claimed: list[tuple[str, str, str, dict[str, Any]]] = []
+        async with self._lock:
+            for origin, item in self._data["subscriptions"].items():
+                if not isinstance(item, dict) or not bool(item.get("subscribed", False)):
+                    continue
+                schedule_time = str(item.get("schedule_time") or "").strip()
+                if not self._is_due(schedule_time, now, catch_up):
+                    continue
+                if str(item.get("last_attempt_date") or "") == today:
+                    continue
+                parsed = self._target_from_item(origin, item)
+                if not parsed:
+                    continue
+                item["last_attempt_date"] = today
+                item["last_attempt_at"] = int(time.time())
+                claimed.append((*parsed, dict(item)))
+            if claimed:
+                self._write_atomic(self._data)
+        return claimed
+
+    @staticmethod
+    def _is_due(schedule_time: str, now: datetime, catch_up_minutes: int) -> bool:
+        try:
+            hour_text, minute_text = str(schedule_time).split(":", 1)
+            due = now.replace(
+                hour=int(hour_text), minute=int(minute_text), second=0, microsecond=0
+            )
+        except Exception:
+            return False
+        if now < due:
+            return False
+        return now <= due + timedelta(minutes=catch_up_minutes)
+
+    @staticmethod
+    def _target_from_item(origin: str, item: dict[str, Any]) -> tuple[str, str, str] | None:
+        platform_id = str(item.get("platform_id") or "")
+        group_openid = str(item.get("group_openid") or "")
+        if not platform_id or not group_openid:
+            parts = str(origin).split(":", 2)
+            if len(parts) == 3:
+                platform_id = platform_id or parts[0]
+                group_openid = group_openid or parts[2]
+        if platform_id and group_openid:
+            return str(origin), platform_id, group_openid
+        return None
