@@ -559,6 +559,10 @@ class GroupDailyAnalysis(Star):
             return False
 
     async def _handle_fingerprint_command(self, event: AstrMessageEvent):
+        # 新增总开关：关闭指纹认证后，无需认证即可使用
+        if not self.config_manager.get_require_fingerprint_auth():
+            yield event.plain_result("ℹ️ 已关闭指纹认证要求，当前无需执行认证即可使用 /群分析。")
+            return
         if not self._is_qq_official_event(event):
             yield event.plain_result("❌ 指纹认证仅支持 QQ 官方群。")
             return
@@ -587,9 +591,11 @@ class GroupDailyAnalysis(Star):
             yield event.plain_result(self._subscription_usage_message(existing))
             return
         sender_id = self._event_sender_id(event)
-        if not await self.qq_official_subscription_store.is_certified(sender_id):
-            yield event.plain_result("❌ 请先在指定内测群内执行 /群分析 指纹认证。")
-            return
+        # 指纹认证总开关：关闭后跳过认证检查
+        if self.config_manager.get_require_fingerprint_auth():
+            if not await self.qq_official_subscription_store.is_certified(sender_id):
+                yield event.plain_result("❌ 请先在指定内测群内执行 /群分析 指纹认证。")
+                return
         if not await self._send_subscription_probe(origin, schedule_time):
             await self.qq_official_subscription_store.unsubscribe(origin, "PROACTIVE_PROBE_FAILED")
             yield event.plain_result(self._subscription_probe_fail_message())
@@ -902,11 +908,13 @@ class GroupDailyAnalysis(Star):
             # QQ Official 专精版：手动 /群分析 也必须先在内测群完成指纹认证。
             # debug/诊断不跑 LLM 且不发报告，仍允许用于排障；订阅/取消/认证
             # 已在上方单独处理。
-            if self._is_qq_official_event(event):
-                sender_id = self._event_sender_id(event)
-                if not await self.qq_official_subscription_store.is_certified(sender_id):
-                    yield event.plain_result("❌ 请先在指定内测群内执行 /群分析 指纹认证。")
-                    return
+            # 新增总开关：require_fingerprint_auth 关闭时跳过此检查
+            if self.config_manager.get_require_fingerprint_auth():
+                if self._is_qq_official_event(event):
+                    sender_id = self._event_sender_id(event)
+                    if not await self.qq_official_subscription_store.is_certified(sender_id):
+                        yield event.plain_result("❌ 请先在指定内测群内执行 /群分析 指纹认证。")
+                        return
 
             # 更新bot实例
             self.bot_manager.update_from_event(event)

@@ -37,6 +37,14 @@ class ConfigManager:
             self.config[group] = {}
         return self.config[group]
 
+    def get_require_group_auth(self) -> bool:
+        """是否启用群组白/黑名单认证总开关，关闭则所有群直接放行"""
+        return bool(self._get_group("basic").get("require_group_auth", True))
+
+    def get_require_fingerprint_auth(self) -> bool:
+        """是否启用QQ官方指纹认证，关闭则无需先在内测群认证"""
+        return bool(self._get_group("qq_official_beta").get("require_fingerprint_auth", True))
+
     def get_group_list_mode(self) -> str:
         """获取群组列表模式 (whitelist/blacklist/none)"""
         return self._get_group("basic").get("group_list_mode", "none")
@@ -50,6 +58,10 @@ class ConfigManager:
         根据配置的白/黑名单判断是否允许在该群聊中使用
         支持传入 simple group_id 或 UMO (Unified Message Origin)
         """
+        # 新增总开关：如果关闭认证，直接放行
+        if not self.get_require_group_auth():
+            return True
+
         mode = self.get_group_list_mode().lower()
         if mode not in ("whitelist", "blacklist", "none"):
             mode = "none"

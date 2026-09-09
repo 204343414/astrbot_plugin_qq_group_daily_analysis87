@@ -441,31 +441,40 @@ class ReportGenerator(IReportGenerator):
                                 else:
                                     # 尝试解析 HTML 错误（如 502 Bad Gateway）
                                     html_error = None
+                                    raw_preview = ""
                                     if isinstance(image_data, bytes):
                                         html_error = self._extract_html_error_summary(
                                             image_data
                                         )
+                                        try:
+                                            raw_preview = image_data[:2000].decode(
+                                                "utf-8", errors="ignore"
+                                            )
+                                        except Exception:
+                                            raw_preview = str(image_data[:200])
                                     elif isinstance(image_data, str) and os.path.exists(
                                         image_data
                                     ):
                                         try:
                                             with open(image_data, "rb") as f:
                                                 # 读取前 4KB 即可识别 HTML 错误
+                                                chunk = f.read(4096)
                                                 html_error = (
-                                                    self._extract_html_error_summary(
-                                                        f.read(4096)
-                                                    )
+                                                    self._extract_html_error_summary(chunk)
+                                                )
+                                                raw_preview = chunk[:2000].decode(
+                                                    "utf-8", errors="ignore"
                                                 )
                                         except Exception:
                                             pass
 
                                     if html_error:
                                         logger.warning(
-                                            f"[T2I] 渲染引擎返回了错误页面而非图片: {html_error}"
+                                            f"[T2I] 渲染引擎返回了错误页面而非图片: {html_error} | 原始前500字符: {raw_preview[:500]}"
                                         )
                                     else:
                                         logger.warning(
-                                            f"渲染结果似乎不是有效的图片数据 (头部: {actual_data_head.hex()})"
+                                            f"渲染结果似乎不是有效的图片数据 (头部: {actual_data_head.hex()} -> {actual_data_head!r}) 预览: {raw_preview[:500]}"
                                         )
 
                             if is_valid:
@@ -1569,10 +1578,15 @@ class ReportGenerator(IReportGenerator):
             logger.warning(f"关闭头像缓存失败: {e}")
 
     def _extract_html_error_summary(self, data: bytes) -> str | None:
-        """从返回的字节流中尝试提取 HTML 错误信息（如 <title>）"""
+        """从返回的字节流中尝试提取 HTML 错误信息（如 <title>），兼容纯文本 Internal Server Error"""
         try:
-            content = data.decode("utf-8", errors="ignore")
+            content = data.decode("utf-8", errors="ignore").strip()
+            if not content:
+                return None
             content_lower = content.lower()
+            # 纯文本错误，如 Internal Server Error
+            if len(content) < 2000 and ("internal" in content_lower or "error" in content_lower or "exception" in content_lower):
+                return f"文本错误响应: {content[:500]}"
             if "<html" in content_lower or "<!doctype html" in content_lower:
                 # 尝试提取标题
                 title_match = re.search(
@@ -1589,6 +1603,9 @@ class ReportGenerator(IReportGenerator):
                     return f"HTML 错误页: {h1_match.group(1).strip()}"
 
                 return f"HTML 响应 (前100字): {content[:100].strip()}..."
+            # 非HTML但包含可读文本，也返回前200字便于诊断
+            if content and len(content) < 5000:
+                return f"非图片响应 (前200字): {content[:200]}"
         except Exception:
             pass
         return None
