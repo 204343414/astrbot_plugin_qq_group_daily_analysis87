@@ -617,8 +617,9 @@ class QQOfficialAdapter(PlatformAdapter):
             try:
                 file_name = os.path.basename(abs_path) or f"report_{int(time.time())}.jpg"
                 media = await self._upload_image_by_chunks(group_id, abs_path, file_name)
+                f_info = media.get("file_info", "") if isinstance(media, dict) else getattr(media, "file_info", "")
                 logger.info(
-                    f"[QQOfficial] 官方分片直传成功，正在下发大图报告 (file_info={media.file_info[:15]}...)"
+                    f"[QQOfficial] 官方分片直传成功，正在下发大图报告 (file_info={str(f_info)[:15]}...)"
                 )
                 if await self._send_qq_official_media_direct(
                     group_id, media, content=caption
