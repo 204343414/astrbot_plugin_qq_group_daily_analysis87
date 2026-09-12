@@ -451,6 +451,7 @@ class QQOfficialAdapter(PlatformAdapter):
     async def send_image(
         self, group_id: str, image_path: str, caption: str = ""
     ) -> bool:
+        import builtins
         from astrbot.api.event import MessageChain
 
         chain = MessageChain()
@@ -463,7 +464,32 @@ class QQOfficialAdapter(PlatformAdapter):
         elif image_path.startswith(("http://", "https://")):
             chain.url_image(image_path)
         else:
-            chain.file_image(os.path.abspath(image_path))
+            # 优先借用 qqofficial_hub 的图床发布公网 URL
+            host = getattr(builtins, "_qqhub_image_host_live", None)
+            uploaded_url = None
+            if (
+                host
+                and getattr(host, "configured", False)
+                and getattr(host, "running", False)
+            ):
+                try:
+                    with open(os.path.abspath(image_path), "rb") as fp:
+                        raw_bytes = fp.read()
+                    uploaded_url = host.publish(
+                        raw_bytes, slot=f"daily_analysis_{group_id}"
+                    )
+                    logger.info(
+                        f"[QQOfficial] 群分析图片已成功发布到图床: {uploaded_url}"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"[QQOfficial] 发布群分析图片到图床失败，降级为本地发送: {exc}"
+                    )
+
+            if uploaded_url:
+                chain.url_image(uploaded_url)
+            else:
+                chain.file_image(os.path.abspath(image_path))
         return await self._send_chain(group_id, chain)
 
     async def send_file(
