@@ -448,60 +448,193 @@ class QQOfficialAdapter(PlatformAdapter):
             chunks.append(current)
         return chunks
 
-    def _is_image_host_enabled(self) -> bool:
-        """检查配置中是否允许借用 QQ 官方图床。"""
-        if self._plugin_instance and hasattr(self._plugin_instance, "config_manager"):
-            try:
-                return bool(
-                    self._plugin_instance.config_manager.get_qq_official_use_image_host()
-                )
-            except Exception:
-                pass
-        return True
+    @staticmethod
+    def _file_hashes(path: str) -> tuple[str, str, str]:
+        md5 = hashlib.md5()
+        sha1 = hashlib.sha1()
+        md5_10m = hashlib.md5()
+        remaining_10m = 10_002_432
+        with open(path, "rb") as file_obj:
+            while True:
+                chunk = file_obj.read(1024 * 1024)
+                if not chunk:
+                    break
+                md5.update(chunk)
+                sha1.update(chunk)
+                if remaining_10m > 0:
+                    head = chunk[:remaining_10m]
+                    md5_10m.update(head)
+                    remaining_10m -= len(head)
+        return md5.hexdigest(), sha1.hexdigest(), md5_10m.hexdigest()
+
+    async def _upload_image_by_chunks(
+        self,
+        group_id: str,
+        path: str,
+        file_name: str,
+    ) -> Any:
+        """使用 QQ 官方分片上传协议将大图直传到腾讯对象存储。"""
+        from botpy.http import Route
+        from botpy.types.message import Media
+
+        api = getattr(self.bot, "api", None)
+        http_client = getattr(api, "_http", None)
+        if not http_client:
+            raise RuntimeError("无法获取 QQ Bot HTTP 客户端")
+
+        file_size = os.path.getsize(path)
+        md5, sha1, md5_10m = self._file_hashes(path)
+
+        prepare_path = "/v2/groups/{group_id}/upload_prepare"
+        finish_path = "/v2/groups/{group_id}/upload_part_finish"
+        files_path = "/v2/groups/{group_openid}/files"
+        prepare_kwargs = {"group_id": group_id}
+        finish_kwargs = {"group_id": group_id}
+        files_kwargs = {"group_openid": group_id}
+
+        prepare_payload = {
+            "file_type": 1,
+            "file_size": str(file_size),
+            "file_name": file_name,
+            "md5": md5,
+            "sha1": sha1,
+            "md5_10m": md5_10m,
+        }
+        prepare = await http_client.request(
+            Route("POST", prepare_path, **prepare_kwargs), json=prepare_payload
+        )
+        if not isinstance(prepare, dict) or not prepare.get("upload_id"):
+            raise RuntimeError(f"预上传响应异常: {prepare}")
+
+        upload_id = str(prepare["upload_id"])
+        block_size = int(prepare.get("block_size") or 5 * 1024 * 1024)
+        parts = prepare.get("parts") or []
+        upload_config = prepare.get("upload_config") or {}
+        retry_timeout = int(upload_config.get("retry_timeout") or 300)
+
+        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=retry_timeout)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            with open(path, "rb") as file_obj:
+                uploaded_bytes = 0
+                for order, part in enumerate(
+                    sorted(parts, key=lambda item: int(item.get("index", 0)))
+                ):
+                    index = int(part.get("index", order))
+                    presigned_url = str(part.get("presigned_url") or "")
+                    if not presigned_url:
+                        raise RuntimeError(f"分片 {index} 缺少 presigned_url")
+                    part_size = int(part.get("block_size") or block_size)
+                    remaining = file_size - uploaded_bytes
+                    if remaining <= 0:
+                        break
+                    file_obj.seek(uploaded_bytes)
+                    data = file_obj.read(min(part_size, remaining))
+                    if not data:
+                        raise RuntimeError(f"分片 {index} 读取为空")
+
+                    async with session.put(
+                        presigned_url,
+                        data=data,
+                        headers={"Content-Type": "application/octet-stream"},
+                    ) as resp:
+                        if resp.status not in (200, 201, 204):
+                            raise RuntimeError(f"分片 PUT 失败: HTTP {resp.status}")
+
+                    part_md5 = hashlib.md5(data).hexdigest()
+                    await http_client.request(
+                        Route("POST", finish_path, **finish_kwargs),
+                        json={
+                            "upload_id": upload_id,
+                            "part_index": index,
+                            "block_size": str(len(data)),
+                            "md5": part_md5,
+                        },
+                    )
+                    uploaded_bytes += len(data)
+
+        complete_payload = {
+            "file_type": 1,
+            "srv_send_msg": False,
+            "file_name": file_name,
+            "upload_id": upload_id,
+        }
+        complete = await http_client.request(
+            Route("POST", files_path, **files_kwargs), json=complete_payload
+        )
+        if not isinstance(complete, dict) or not complete.get("file_info"):
+            raise RuntimeError(f"分片合并响应缺少 file_info: {complete}")
+        return Media(
+            file_uuid=complete.get("file_uuid", ""),
+            file_info=complete["file_info"],
+            ttl=complete.get("ttl", 0),
+        )
+
+    async def _send_qq_official_media_direct(
+        self,
+        group_id: str,
+        media: Any,
+        content: str = "",
+    ) -> bool:
+        api = getattr(self.bot, "api", None)
+        post_group_message = getattr(api, "post_group_message", None)
+        if not callable(post_group_message):
+            return False
+
+        platform = getattr(self.bot, "platform", None)
+        remember_scene = getattr(platform, "remember_session_scene", None)
+        if callable(remember_scene):
+            remember_scene(str(group_id), "group")
+
+        result = await post_group_message(
+            group_openid=str(group_id),
+            msg_type=7,
+            content=content or " ",
+            media=media,
+            msg_seq=self._next_markdown_msg_seq(),
+        )
+        return result is not None
 
     async def send_image(
         self, group_id: str, image_path: str, caption: str = ""
     ) -> bool:
-        import builtins
+        if image_path.startswith(("http://", "https://", "base64://", "data:")):
+            from astrbot.api.event import MessageChain
+
+            chain = MessageChain()
+            if caption:
+                chain.message(caption)
+            if image_path.startswith("base64://"):
+                chain.base64_image(image_path[len("base64://") :])
+            elif image_path.startswith("data:") and "," in image_path:
+                chain.base64_image(image_path.split(",", 1)[1])
+            else:
+                chain.url_image(image_path)
+            return await self._send_chain(group_id, chain)
+
+        # 本地文件：优先采用官方分片直传，彻底解决超清长图 Base64 上传失败问题
+        abs_path = os.path.abspath(image_path)
+        if os.path.exists(abs_path) and os.path.getsize(abs_path) > 0:
+            try:
+                file_name = os.path.basename(abs_path) or f"report_{int(time.time())}.jpg"
+                media = await self._upload_image_by_chunks(group_id, abs_path, file_name)
+                logger.info(
+                    f"[QQOfficial] 官方分片直传成功，正在下发大图报告 (file_info={media.file_info[:15]}...)"
+                )
+                if await self._send_qq_official_media_direct(
+                    group_id, media, content=caption
+                ):
+                    return True
+                logger.warning("[QQOfficial] 分片直发接口未返回成功，回退至常规发送")
+            except Exception as exc:
+                logger.warning(f"[QQOfficial] 官方分片上传失败，回退至常规发送: {exc}")
+
+        # 回退至常规链式发送
         from astrbot.api.event import MessageChain
 
         chain = MessageChain()
         if caption:
             chain.message(caption)
-        if image_path.startswith("base64://"):
-            chain.base64_image(image_path[len("base64://") :])
-        elif image_path.startswith("data:") and "," in image_path:
-            chain.base64_image(image_path.split(",", 1)[1])
-        elif image_path.startswith(("http://", "https://")):
-            chain.url_image(image_path)
-        else:
-            # 优先借用 qqofficial_hub 的图床发布公网 URL
-            host = getattr(builtins, "_qqhub_image_host_live", None)
-            uploaded_url = None
-            if (
-                self._is_image_host_enabled()
-                and host
-                and getattr(host, "configured", False)
-                and getattr(host, "running", False)
-            ):
-                try:
-                    with open(os.path.abspath(image_path), "rb") as fp:
-                        raw_bytes = fp.read()
-                    uploaded_url = host.publish(
-                        raw_bytes, slot=f"daily_analysis_{group_id}"
-                    )
-                    logger.info(
-                        f"[QQOfficial] 群分析图片已成功发布到图床: {uploaded_url}"
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        f"[QQOfficial] 发布群分析图片到图床失败，降级为本地发送: {exc}"
-                    )
-
-            if uploaded_url:
-                chain.url_image(uploaded_url)
-            else:
-                chain.file_image(os.path.abspath(image_path))
+        chain.file_image(abs_path)
         return await self._send_chain(group_id, chain)
 
     async def send_file(
