@@ -625,9 +625,11 @@ class QQOfficialAdapter(PlatformAdapter):
                     group_id, media, content=caption
                 ):
                     return True
-                logger.warning("[QQOfficial] 分片直发接口未返回成功，回退至常规发送")
+                logger.warning("[QQOfficial] 官方分片直发接口未返回成功")
+                return False
             except Exception as exc:
-                logger.warning(f"[QQOfficial] 官方分片上传失败，回退至常规发送: {exc}")
+                logger.warning(f"[QQOfficial] 官方分片上传或直发失败 (如内容违规/网络错误): {exc}")
+                return False
 
         # 回退至常规链式发送
         from astrbot.api.event import MessageChain
