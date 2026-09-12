@@ -812,6 +812,12 @@ class ReportGenerator(IReportGenerator):
         allow_alphanumeric_user_ids: bool = False,
     ) -> dict:
         """准备渲染数据"""
+        # 如果开启了随机模板模式，在准备数据前抽取本次渲染所使用的模板
+        if hasattr(self, "html_templates") and hasattr(
+            self.html_templates, "select_fresh_template"
+        ):
+            self.html_templates.select_fresh_template()
+
         stats = analysis_result["statistics"]
         topics = analysis_result["topics"]
         user_titles = analysis_result["user_titles"]

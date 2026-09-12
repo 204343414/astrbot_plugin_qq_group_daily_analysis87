@@ -702,6 +702,22 @@ class ConfigManager:
         self._ensure_group("html")["html_filename_format"] = format_str
         self.config.save_config()
 
+    AVAILABLE_REPORT_TEMPLATES = (
+        "ATRI",
+        "BlueArchive",
+        "scrapbook",
+        "retro_futurism",
+        "HatsuneMiku",
+        "hack",
+        "spring_festival",
+        "simple",
+        "format",
+    )
+
+    def get_random_report_template_enabled(self) -> bool:
+        """获取是否开启随机抽取报告模板"""
+        return bool(self._get_group("basic").get("random_report_template", False))
+
     def get_report_template(self) -> str:
         """获取报告模板名称"""
         return self._get_group("basic").get("report_template", "scrapbook")

@@ -99,6 +99,12 @@
                 "default": "scrapbook",
                 "hint": "分析报告使用的HTML模板名称，QQ 端可以使用 `/设置模板` 查看使用指南，使用`/查看模板` 命令查看模板样式效果。其他平台不支持合并转发，可以到 [模板](https://github.com/SXP-Simon/astrbot_plugin_qq_group_daily_analysis/tree/main/assets) 文件夹中查看模板样式效果"
             },
+            "random_report_template": {
+                "type": "bool",
+                "description": "随机抽取报告模板",
+                "default": false,
+                "hint": "开启后，每次生成群日常分析报告时，将从可用模板列表中随机选取一个模板进行渲染。"
+            },
             "profile_display_mode": {
                 "type": "string",
                 "description": "人格标签展示模式",

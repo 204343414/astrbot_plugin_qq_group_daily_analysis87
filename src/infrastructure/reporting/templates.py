@@ -15,6 +15,18 @@ from ...utils.logger import logger
 class HTMLTemplates:
     """HTML模板管理类"""
 
+    AVAILABLE_TEMPLATES = [
+        "ATRI",
+        "BlueArchive",
+        "scrapbook",
+        "retro_futurism",
+        "HatsuneMiku",
+        "hack",
+        "spring_festival",
+        "simple",
+        "format",
+    ]
+
     def __init__(self, config_manager):
         """初始化Jinja2环境"""
         self.config_manager = config_manager
@@ -26,10 +38,30 @@ class HTMLTemplates:
         # 缓存不同模板的Jinja2环境（多线程安全）
         self._envs = {}
         self._env_lock = threading.Lock()
+        self._active_template_override: str | None = None
+
+    def select_fresh_template(self) -> str:
+        """如果开启了随机模板，抽取一个模板作为当前批次的主题"""
+        if self.config_manager.get_random_report_template_enabled():
+            import random
+
+            selected = random.choice(self.AVAILABLE_TEMPLATES)
+            self._active_template_override = selected
+            logger.info(f"[群分析插件] 开启了随机模板模式，本次选用模板: {selected}")
+            return selected
+        self._active_template_override = None
+        return self.config_manager.get_report_template()
+
+    def get_current_template_name(self) -> str:
+        if self._active_template_override:
+            return self._active_template_override
+        if self.config_manager.get_random_report_template_enabled():
+            return self.select_fresh_template()
+        return self.config_manager.get_report_template()
 
     def _get_env_sync(self) -> Environment:
         """获取当前配置的模板环境（同步版本，供 asyncio.to_thread 调用）"""
-        template_name = self.config_manager.get_report_template()
+        template_name = self.get_current_template_name()
 
         # 如果环境已缓存且配置未变（使用锁保证多线程安全）
         with self._env_lock:
