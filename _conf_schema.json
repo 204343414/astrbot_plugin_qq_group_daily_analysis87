@@ -183,6 +183,12 @@
         "type": "object",
         "hint": "仅作用于 QQ 官方机器人及 QQ 官方 Webhook 的报告展示。",
         "items": {
+            "use_image_host": {
+                "type": "bool",
+                "description": "启用图床外链发图 (QQOfficial Hub)",
+                "default": true,
+                "hint": "生成群分析图片后，自动发布至 QQOfficial Hub 的图床服务并以 URL 形式发送，避免超大图片因 Base64 编码导致官方 API 上传失败。"
+            },
             "enable_t2i_activity_histogram": {
                 "type": "bool",
                 "description": "启用 T2I 群聊概览图",

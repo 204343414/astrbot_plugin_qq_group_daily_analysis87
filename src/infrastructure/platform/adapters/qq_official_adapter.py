@@ -448,6 +448,17 @@ class QQOfficialAdapter(PlatformAdapter):
             chunks.append(current)
         return chunks
 
+    def _is_image_host_enabled(self) -> bool:
+        """检查配置中是否允许借用 QQ 官方图床。"""
+        if self._plugin_instance and hasattr(self._plugin_instance, "config_manager"):
+            try:
+                return bool(
+                    self._plugin_instance.config_manager.get_qq_official_use_image_host()
+                )
+            except Exception:
+                pass
+        return True
+
     async def send_image(
         self, group_id: str, image_path: str, caption: str = ""
     ) -> bool:
@@ -468,7 +479,8 @@ class QQOfficialAdapter(PlatformAdapter):
             host = getattr(builtins, "_qqhub_image_host_live", None)
             uploaded_url = None
             if (
-                host
+                self._is_image_host_enabled()
+                and host
                 and getattr(host, "configured", False)
                 and getattr(host, "running", False)
             ):

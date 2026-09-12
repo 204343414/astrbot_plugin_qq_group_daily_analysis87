@@ -163,6 +163,10 @@ class ConfigManager:
         val = self._get_group("basic").get("output_format", ["image"])
         return val if isinstance(val, list) else [val]
 
+    def get_qq_official_use_image_host(self) -> bool:
+        """获取是否启用 QQ 官方图床外链发图"""
+        return bool(self._get_group("qq_official").get("use_image_host", True))
+
     def get_qq_official_t2i_summary_dashboard_enabled(self) -> bool:
         """是否启用 QQ 官方 T2I 概览图。"""
         group = self._get_group("qq_official")
