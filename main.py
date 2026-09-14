@@ -928,7 +928,6 @@ class GroupDailyAnalysis(Star):
         self, event: AstrMessageEvent, template_name: str | None = None
     ):
         """模拟生成群分析卡片（不调用 LLM，纯净测试卡片与详细耗时诊断）"""
-        event.stop_event()
         async for result in self._handle_mock_analysis_command(event, template_name):
             yield result
 
@@ -941,7 +940,6 @@ class GroupDailyAnalysis(Star):
         self, event: AstrMessageEvent, template_name: str | None = None
     ):
         """模拟生成群分析卡片（不调用 LLM，纯净测试卡片与详细耗时诊断）"""
-        event.stop_event()
         async for result in self._handle_mock_analysis_command(event, template_name):
             yield result
 
