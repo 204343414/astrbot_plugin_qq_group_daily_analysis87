@@ -834,6 +834,14 @@ class GroupDailyAnalysis(Star):
         lines.append("━━━━━━━━━━━━━━━━━━━━")
 
         yield event.plain_result("\n".join(lines))
+        if not sent and image_url:
+            from astrbot.api.event import Image
+            if image_url.startswith("http"):
+                yield event.chain_result([Image.fromURL(image_url)])
+            elif image_url.startswith("base64://"):
+                yield event.chain_result([Image(image_url)])
+            else:
+                yield event.chain_result([Image.fromFileSystem(image_url)])
 
     async def _handle_daily_unsubscribe_command(self, event: AstrMessageEvent):
         if not self._is_qq_official_event(event):

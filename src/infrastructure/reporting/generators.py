@@ -287,6 +287,15 @@ class ReportGenerator(IReportGenerator):
 
         return name
 
+    def _generate_ulid(self) -> str:
+        """生成唯一 ULID 字符串，兼容多种 ULID 库实现"""
+        if hasattr(ulid, "new"):
+            return str(ulid.new())
+        if hasattr(ulid, "ULID"):
+            return str(ulid.ULID())
+        import uuid
+        return uuid.uuid4().hex
+
     def _build_safe_report_path(
         self,
         output_dir: Path,
@@ -295,7 +304,7 @@ class ReportGenerator(IReportGenerator):
         date: str,
     ) -> Path:
         """根据格式构建安全输出路径，支持子目录和 {ulid}。"""
-        generated_ulid = str(ulid.new())
+        generated_ulid = self._generate_ulid()
         safe_context = {
             "group_id": group_id,
             "date": date,
