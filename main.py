@@ -635,6 +635,12 @@ class GroupDailyAnalysis(Star):
             return
 
         self.bot_manager.update_from_event(event)
+        logger.info(
+            "模拟群分析开始: group=%s, platform=%s, requested_template=%s",
+            group_id,
+            platform_id,
+            target_template or "默认",
+        )
 
         # 匹配目标模板
         available_templates = [
@@ -672,6 +678,7 @@ class GroupDailyAnalysis(Star):
                 self.report_generator.html_templates.set_template_override(chosen_template)
 
             # 调用真实 DDD 应用服务，仅跳过 LLM 耗时
+            logger.info("模拟群分析开始执行分析服务: group=%s", group_id)
             result = await self.analysis_service.execute_daily_analysis(
                 group_id=group_id,
                 platform_id=platform_id,
@@ -679,14 +686,28 @@ class GroupDailyAnalysis(Star):
                 skip_llm=True,
             )
             result["is_mock"] = True
+            logger.info(
+                "模拟群分析分析服务返回: group=%s success=%s reason=%s",
+                group_id,
+                result.get("success"),
+                result.get("reason"),
+            )
 
             if not result.get("success"):
                 yield event.plain_result(f"❌ 模拟群分析执行失败: {result.get('reason')}")
                 return
 
             # 直接复用标准报告发送链路（支持分片直传与全套日志输出）
-            async for res in self._send_analysis_report(event, result):
-                yield res
+            logger.info("模拟群分析开始生成并发送报告: group=%s", group_id)
+            report_stream = self._send_analysis_report(event, result)
+            try:
+                async with asyncio.timeout(240):
+                    async for res in report_stream:
+                        yield res
+                logger.info("模拟群分析报告发送流程结束: group=%s", group_id)
+            except TimeoutError:
+                logger.error("模拟群分析报告发送超时: group=%s", group_id)
+                yield event.plain_result("❌ 模拟群分析超过 4 分钟未完成，请检查 T2I/发送接口日志")
 
         except Exception as e:
             logger.error(f"模拟群分析发生异常: {e}", exc_info=True)

@@ -4,7 +4,9 @@ HTML模板模块
 """
 
 import asyncio
+import datetime as dt
 import os
+import random
 import threading
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -44,14 +46,34 @@ class HTMLTemplates:
         """临时覆盖当前使用的模板（用于模拟/测试/单次指定模板）"""
         self._active_template_override = template_name
 
+    @staticmethod
+    def _is_lunar_new_year_window(today: dt.date | None = None) -> bool:
+        """Return whether today is within the traditional Lunar New Year window."""
+        # The window is intentionally limited to the first lunar month (正月).
+        # Python's standard library has no lunar calendar; the date table covers
+        # the supported Gregorian years and fails closed outside it.
+        lunar_new_years = {
+            2024: dt.date(2024, 2, 10),
+            2025: dt.date(2025, 1, 29),
+            2026: dt.date(2026, 2, 17),
+            2027: dt.date(2027, 2, 6),
+            2028: dt.date(2028, 1, 26),
+            2029: dt.date(2029, 2, 13),
+            2030: dt.date(2030, 2, 3),
+        }
+        today = today or dt.date.today()
+        new_year = lunar_new_years.get(today.year)
+        return bool(new_year and new_year <= today <= new_year + dt.timedelta(days=29))
+
     def select_fresh_template(self) -> str:
-        """如果开启了随机模板，抽取一个模板作为当前批次的主题"""
+        """如果开启随机模板，抽取主题；春节模板仅在春节窗口参与随机。"""
         if self._active_template_override:
             return self._active_template_override
         if self.config_manager.get_random_report_template_enabled():
-            import random
-
-            selected = random.choice(self.AVAILABLE_TEMPLATES)
+            templates = [t for t in self.AVAILABLE_TEMPLATES if t != "spring_festival"]
+            if self._is_lunar_new_year_window():
+                templates.append("spring_festival")
+            selected = random.choice(templates)
             self._active_template_override = selected
             logger.info(f"[群分析插件] 开启了随机模板模式，本次选用模板: {selected}")
             return selected
