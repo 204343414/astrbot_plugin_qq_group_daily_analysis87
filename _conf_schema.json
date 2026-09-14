@@ -271,19 +271,19 @@
                     "jpeg",
                     "png"
                 ],
-                "default": "png",
-                "hint": "建议：PNG 格式无损但体积较大；JPEG 格式体积较小。"
+                "default": "jpeg",
+                "hint": "建议：JPEG 渲染速度快、内存占用低；PNG 格式体积较大且可能在长图时超时。"
             },
             "t2i_r1_quality": {
                 "type": "int",
                 "description": "第一轮：图片质量 (若为 JPEG)",
-                "default": 100,
+                "default": 95,
                 "slider": {
                     "min": 1,
                     "max": 100,
                     "step": 1
                 },
-                "hint": "仅对 JPEG 格式生效。建议 80-100。"
+                "hint": "仅对 JPEG 格式生效。建议 85-98。"
             },
             "t2i_r1_device_scale": {
                 "type": "string",
@@ -293,19 +293,19 @@
                     "high",
                     "ultra"
                 ],
-                "default": "ultra",
-                "hint": "影响图片清晰度。normal=1.0x, high=1.3x, ultra=1.8x。高质量日报建议 ultra。"
+                "default": "high",
+                "hint": "影响图片清晰度。normal=1.0x, high=1.3x, ultra=1.8x。推荐 high 兼顾清晰度与秒级渲染。"
             },
             "t2i_r1_timeout": {
                 "type": "int",
                 "description": "第一轮：渲染超时 (ms)",
-                "default": 50000,
+                "default": 25000,
                 "slider": {
-                    "min": 30000,
-                    "max": 180000,
+                    "min": 10000,
+                    "max": 60000,
                     "step": 5000
                 },
-                "hint": "单次渲染的最长等待时间。复杂页面建议调大。"
+                "hint": "单次渲染的最长等待时间。默认 25 秒。"
             },
             "t2i_r2_type": {
                 "type": "string",
@@ -336,16 +336,16 @@
                     "high",
                     "ultra"
                 ],
-                "default": "high",
-                "hint": "回退建议使用 high/normal 以降低复杂页面的内存消耗和超时概率。"
+                "default": "normal",
+                "hint": "回退建议使用 normal 以降低复杂页面的内存消耗并瞬间出图。"
             },
             "t2i_r2_timeout": {
                 "type": "int",
                 "description": "第二轮 (回退)：渲染超时 (ms)",
-                "default": 100000,
+                "default": 20000,
                 "slider": {
-                    "min": 30000,
-                    "max": 180000,
+                    "min": 10000,
+                    "max": 60000,
                     "step": 5000
                 },
                 "hint": "回退尝试通常针对复杂页面，建议设置更长的超时时间（如 100000ms+）。"

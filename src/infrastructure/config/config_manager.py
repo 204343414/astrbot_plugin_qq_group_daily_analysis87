@@ -233,33 +233,42 @@ class ConfigManager:
         return self._get_group("basic").get("enable_base64_image", False)
 
     def get_t2i_rendering_strategies(self) -> list[dict]:
-        """获取用户配置的 T2I 渲染策略（包含保底降级）"""
+        """获取用户配置的 T2I 渲染策略（包含智能限时与保底降级）"""
         group = self._get_group("t2i_rendering")
 
+        r1_type = group.get("t2i_r1_type", "jpeg")
+        r1_scale = group.get("t2i_r1_device_scale", "high")
+        # 限制单轮最大等待时间，防止因设置 180000 导致挂起 3 分钟
+        r1_timeout = min(max(int(group.get("t2i_r1_timeout", 25000)), 5000), 45000)
+
+        r2_type = group.get("t2i_r2_type", "jpeg")
+        r2_scale = group.get("t2i_r2_device_scale", "normal")
+        r2_timeout = min(max(int(group.get("t2i_r2_timeout", 20000)), 5000), 30000)
+
         return [
-            # 第一轮：质量优先
+            # 第一轮：质量与速度均衡
             {
                 "full_page": True,
-                "type": group.get("t2i_r1_type", "png"),
-                "quality": group.get("t2i_r1_quality", 100),
-                "device_scale_factor_level": group.get("t2i_r1_device_scale", "ultra"),
-                "timeout": group.get("t2i_r1_timeout", 30000),
+                "type": r1_type,
+                "quality": int(group.get("t2i_r1_quality", 95)),
+                "device_scale_factor_level": r1_scale,
+                "timeout": r1_timeout,
             },
-            # 第二轮：稳定性/回退优先
+            # 第二轮：稳定性回退
             {
                 "full_page": True,
-                "type": group.get("t2i_r2_type", "jpeg"),
-                "quality": group.get("t2i_r2_quality", 80),
-                "device_scale_factor_level": group.get("t2i_r2_device_scale", "normal"),
-                "timeout": group.get("t2i_r2_timeout", 60000),
+                "type": r2_type,
+                "quality": int(group.get("t2i_r2_quality", 80)),
+                "device_scale_factor_level": r2_scale,
+                "timeout": r2_timeout,
             },
-            # 第三轮：极速系统字体兜底（防止前两轮因超大外部字体/高分辨率引发 Browserless 500）
+            # 第三轮：极速保底
             {
                 "full_page": True,
                 "type": "jpeg",
                 "quality": 75,
                 "device_scale_factor_level": "normal",
-                "timeout": 30000,
+                "timeout": 20000,
             },
         ]
 
