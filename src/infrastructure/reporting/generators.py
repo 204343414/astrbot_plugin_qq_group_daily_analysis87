@@ -477,10 +477,10 @@ class ReportGenerator(IReportGenerator):
                         if image_options.get("type") == "png":
                             image_options.pop("quality", None)
 
-                        # 在回退重试轮次中，自动移除外部大字体，转为极速系统字体渲染，彻底消除 500 超时
-                        current_html = html_content
-                        if attempt > 1:
-                            current_html = self._strip_remote_fonts_for_fallback(html_content)
+                        # 本地文件页面不应依赖公网字体；远程字体会让 t2i 的
+                        # file:// 导航长期等待。首轮也使用系统字体，后续轮次
+                        # 继续复用同一份无外链 HTML，避免首轮重复触发阻塞。
+                        current_html = self._strip_remote_fonts_for_fallback(html_content)
 
                         logger.info(f"正在尝试第 {attempt} 轮渲染策略: {image_options}")
 
