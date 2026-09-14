@@ -11,6 +11,7 @@ import html
 import json
 import os
 import re
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -358,6 +359,8 @@ class ReportGenerator(IReportGenerator):
         hide_user_names: bool = False,
         # Also controls ID normalization and fallback display name ("群友").
         allow_alphanumeric_user_ids: bool = False,
+        template_override: str | None = None,
+        diagnostics: dict | None = None,
     ) -> tuple[str | None, str | None]:
         """
         生成图片格式的分析报告
@@ -368,11 +371,17 @@ class ReportGenerator(IReportGenerator):
             html_render_func: HTML渲染函数
             avatar_url_getter: 异步回调函数，接收 user_id 返回 avatar_url/data
             nickname_getter: 昵称获取函数
+            template_override: 临时指定的模板名称（用于诊断/模拟）
+            diagnostics: 诊断信息收集字典
 
         Returns:
             tuple[str | None, str | None]: (image_url, html_content)
         """
         html_content = None
+        if template_override and hasattr(self, "html_templates"):
+            self.html_templates.set_template_override(template_override)
+
+        jinja_start = time.perf_counter()
         try:
             # 准备渲染数据
             render_payload = await self._prepare_render_data(
@@ -398,9 +407,29 @@ class ReportGenerator(IReportGenerator):
             # 检查HTML内容是否有效
             if not html_content:
                 logger.error("图片报告HTML渲染失败：返回空内容")
+                if diagnostics is not None:
+                    diagnostics["error"] = "HTML 渲染返回空内容"
                 return None, None
 
-            logger.info(f"图片报告HTML渲染完成，长度: {len(html_content)} 字符")
+            jinja_ms = round((time.perf_counter() - jinja_start) * 1000, 2)
+            logger.info(f"图片报告HTML渲染完成，长度: {len(html_content)} 字符 (Jinja2 耗时: {jinja_ms}ms)")
+
+            if diagnostics is not None:
+                current_tmpl = self.html_templates.get_current_template_name()
+                diagnostics["template_name"] = current_tmpl
+                diagnostics["jinja_ms"] = jinja_ms
+                diagnostics["html_chars"] = len(html_content)
+                diagnostics["html_bytes"] = len(html_content.encode("utf-8"))
+                
+                # 检测外部资源
+                remote_fonts = list(set(re.findall(r'url\s*\(\s*[\'"]?(https?://[^\'")]+)[\'"]?\s*\)', html_content, flags=re.IGNORECASE)))
+                remote_css = list(set(re.findall(r'<link[^>]*href=[\'"](https?://[^\'"]+)[\'"]', html_content, flags=re.IGNORECASE)))
+                remote_scripts = list(set(re.findall(r'<script[^>]*src=[\'"](https?://[^\'"]+)[\'"]', html_content, flags=re.IGNORECASE)))
+                
+                diagnostics["remote_fonts"] = remote_fonts
+                diagnostics["remote_css"] = remote_css
+                diagnostics["remote_scripts"] = remote_scripts
+                diagnostics["attempts"] = []
 
             # 从配置中获取两轮渲染策略
             render_strategies = self.config_manager.get_t2i_rendering_strategies()
@@ -412,6 +441,12 @@ class ReportGenerator(IReportGenerator):
                 last_exception = None
 
                 for attempt, image_options in enumerate(render_strategies, 1):
+                    attempt_start = time.perf_counter()
+                    attempt_info = {
+                        "attempt": attempt,
+                        "options": dict(image_options),
+                        "fonts_stripped": (attempt > 1),
+                    }
                     try:
                         # Cleanse options
                         if image_options.get("type") == "png":
@@ -431,6 +466,9 @@ class ReportGenerator(IReportGenerator):
                             False,  # return_url=False，直接获取图片数据
                             image_options,
                         )
+
+                        attempt_duration_ms = round((time.perf_counter() - attempt_start) * 1000, 2)
+                        attempt_info["duration_ms"] = attempt_duration_ms
 
                         if image_data:
                             # 校验是否为合法图片（防止 T2I 返回 500 错误 HTML 字符流）
@@ -485,16 +523,27 @@ class ReportGenerator(IReportGenerator):
                                             pass
 
                                     if html_error:
+                                        attempt_info["error_summary"] = html_error
+                                        attempt_info["raw_preview"] = raw_preview[:300]
                                         logger.warning(
                                             f"[T2I] 渲染引擎返回了错误页面而非图片: {html_error} | 原始前500字符: {raw_preview[:500]}"
                                         )
                                     else:
+                                        attempt_info["error_summary"] = f"非有效图片数据 (头部: {actual_data_head.hex()})"
                                         logger.warning(
                                             f"渲染结果似乎不是有效的图片数据 (头部: {actual_data_head.hex()} -> {actual_data_head!r}) 预览: {raw_preview[:500]}"
                                         )
 
                             if is_valid:
+                                attempt_info["status"] = "SUCCESS"
                                 if isinstance(image_data, bytes):
+                                    attempt_info["result_type"] = "bytes"
+                                    attempt_info["size_bytes"] = len(image_data)
+                                    if diagnostics is not None:
+                                        diagnostics["attempts"].append(attempt_info)
+                                        diagnostics["final_status"] = "SUCCESS"
+                                        diagnostics["final_attempt"] = attempt
+
                                     b64 = base64.b64encode(image_data).decode("utf-8")
                                     image_url = f"base64://{b64}"
                                     logger.info(
@@ -502,16 +551,39 @@ class ReportGenerator(IReportGenerator):
                                     )
                                     return image_url, html_content
                                 elif isinstance(image_data, str):
+                                    attempt_info["result_type"] = "file"
+                                    try:
+                                        attempt_info["size_bytes"] = os.path.getsize(image_data)
+                                    except Exception:
+                                        attempt_info["size_bytes"] = 0
+                                    if diagnostics is not None:
+                                        diagnostics["attempts"].append(attempt_info)
+                                        diagnostics["final_status"] = "SUCCESS"
+                                        diagnostics["final_attempt"] = attempt
+
                                     logger.info(
                                         f"图片生成成功 (轮次 {attempt}): {image_data}"
                                     )
                                     return image_data, html_content
+
+                        attempt_info["status"] = "FAILED"
+                        if "error_summary" not in attempt_info:
+                            attempt_info["error_summary"] = "返回空数据或无效数据"
+                        if diagnostics is not None:
+                            diagnostics["attempts"].append(attempt_info)
 
                         logger.warning(
                             f"渲染轮次 {attempt} ({image_options['type']}) 返回了无效或空数据"
                         )
 
                     except Exception as e:
+                        attempt_duration_ms = round((time.perf_counter() - attempt_start) * 1000, 2)
+                        attempt_info["duration_ms"] = attempt_duration_ms
+                        attempt_info["status"] = "EXCEPTION"
+                        attempt_info["error_summary"] = str(e)
+                        if diagnostics is not None:
+                            diagnostics["attempts"].append(attempt_info)
+
                         logger.warning(f"渲染轮次 {attempt} 失败: {e}")
                         last_exception = e
                         if attempt < len(render_strategies):
@@ -519,13 +591,21 @@ class ReportGenerator(IReportGenerator):
                         continue
 
                 # 如果所有策略都失败
+                if diagnostics is not None:
+                    diagnostics["final_status"] = "FAILED"
+                    diagnostics["error"] = str(last_exception)
                 logger.error(f"所有渲染尝试都失败。最后一个错误: {last_exception}")
                 return None, html_content
 
         except Exception as e:
             logger.error(f"生成图片报告过程发生严重错误: {e}", exc_info=True)
+            if diagnostics is not None:
+                diagnostics["final_status"] = "EXCEPTION"
+                diagnostics["error"] = str(e)
             return None, html_content
         finally:
+            if template_override and hasattr(self, "html_templates"):
+                self.html_templates.set_template_override(None)
             # 清理本次运行的 session 和缓存
             if self._avatar_session:
                 await self._avatar_session.close()

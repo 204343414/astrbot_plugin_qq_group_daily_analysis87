@@ -233,17 +233,16 @@ class ConfigManager:
         return self._get_group("basic").get("enable_base64_image", False)
 
     def get_t2i_rendering_strategies(self) -> list[dict]:
-        """获取用户配置的 T2I 渲染策略（包含智能限时与保底降级）"""
+        """获取用户配置的 T2I 渲染策略（包含保底降级）"""
         group = self._get_group("t2i_rendering")
 
         r1_type = group.get("t2i_r1_type", "jpeg")
         r1_scale = group.get("t2i_r1_device_scale", "high")
-        # 限制单轮最大等待时间，防止因设置 180000 导致挂起 3 分钟
-        r1_timeout = min(max(int(group.get("t2i_r1_timeout", 25000)), 5000), 45000)
+        r1_timeout = int(group.get("t2i_r1_timeout", 50000))
 
         r2_type = group.get("t2i_r2_type", "jpeg")
         r2_scale = group.get("t2i_r2_device_scale", "normal")
-        r2_timeout = min(max(int(group.get("t2i_r2_timeout", 20000)), 5000), 30000)
+        r2_timeout = int(group.get("t2i_r2_timeout", 60000))
 
         return [
             # 第一轮：质量与速度均衡
@@ -268,7 +267,7 @@ class ConfigManager:
                 "type": "jpeg",
                 "quality": 75,
                 "device_scale_factor_level": "normal",
-                "timeout": 20000,
+                "timeout": 30000,
             },
         ]
 

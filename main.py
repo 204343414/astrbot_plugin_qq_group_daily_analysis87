@@ -30,6 +30,17 @@ from .src.application.services.analysis_application_service import (
 from .src.application.services.message_processing_service import (
     MessageProcessingService,
 )
+from .src.domain.models.data_models import (
+    ActivityVisualization,
+    EmojiStatistics,
+    GoldenQuote,
+    GroupStatistics,
+    QualityDimension,
+    QualityReview,
+    SummaryTopic,
+    TokenUsage,
+    UserTitle,
+)
 from .src.domain.services.analysis_domain_service import AnalysisDomainService
 from .src.domain.services.incremental_merge_service import IncrementalMergeService
 from .src.domain.services.statistics_service import StatisticsService
@@ -609,6 +620,221 @@ class GroupDailyAnalysis(Star):
             schedule_time,
         )
 
+    async def _handle_mock_analysis_command(
+        self, event: AstrMessageEvent, target_template: str | None = None
+    ) -> AsyncGenerator:
+        """
+        处理模拟群分析指令（无 LLM 调用，生成纯净测试卡片并提供全链路排障诊断信息）
+        """
+        event.should_call_llm(True)
+        group_id = self._get_group_id_from_event(event)
+        platform_id = self._get_platform_id_from_event(event)
+
+        if not group_id:
+            yield event.plain_result("❌ 请在群聊中使用此命令")
+            return
+
+        self.bot_manager.update_from_event(event)
+        adapter = self.bot_manager.get_adapter(platform_id)
+        is_qq_official = self._is_qq_official_event(event)
+
+        # 匹配目标模板
+        available_templates = [
+            "ATRI",
+            "BlueArchive",
+            "scrapbook",
+            "retro_futurism",
+            "HatsuneMiku",
+            "hack",
+            "spring_festival",
+            "simple",
+            "format",
+        ]
+        chosen_template = None
+        if target_template:
+            clean_tgt = target_template.strip()
+            for t in available_templates:
+                if t.lower() == clean_tgt.lower():
+                    chosen_template = t
+                    break
+            if not chosen_template:
+                yield event.plain_result(
+                    f"⚠️ 未找到模板 '{target_template}'，可用模板: {', '.join(available_templates)}"
+                )
+                return
+        else:
+            chosen_template = self.config_manager.get_report_template()
+
+        yield event.plain_result(
+            f"🧪 正在启动无 LLM 模拟群分析（测试模板: {chosen_template}，纯净数据排障中）..."
+        )
+
+        # 构建干净的模拟数据
+        now_date_str = time.strftime("%Y-%m-%d")
+        hourly_mock = {f"{h:02d}:00": (15 if 9 <= h <= 22 else 2) for h in range(24)}
+        viz = ActivityVisualization(
+            hourly_activity=hourly_mock,
+            daily_activity={now_date_str: 128},
+            peak_hours=["20:00-21:00", "21:00-22:00"],
+        )
+        dimensions = [
+            QualityDimension(
+                name="技术探讨",
+                percentage=45.0,
+                comment="高强度代码交流与性能调优",
+                color="#4CAF50",
+            ),
+            QualityDimension(
+                name="协作互助",
+                percentage=35.0,
+                comment="深入排查渲染与网络耗时",
+                color="#2196F3",
+            ),
+            QualityDimension(
+                name="群聊活力",
+                percentage=20.0,
+                comment="极客日常，精彩发言不断",
+                color="#FF9800",
+            ),
+        ]
+        review = QualityReview(
+            title="今日群聊质量锐评",
+            subtitle="高效协作 · 极客探索",
+            dimensions=dimensions,
+            summary="今日群内技术氛围极其浓厚，全员针对 T2I 渲染链路展开了严密的排查与实测，展现了极高的极客精神！",
+        )
+        topics = [
+            SummaryTopic(
+                topic="T2I 渲染链路与模板性能测试",
+                contributors=["调试助手", "测试群友"],
+                detail="群内针对各类卡片模板进行极速渲染压测，验证外部字体剥离、分辨率适配及分片传输稳定性。",
+                contributor_ids=["mock_user_1", "mock_user_2"],
+            )
+        ]
+        user_titles = [
+            UserTitle(
+                name="调试先锋",
+                user_id="mock_user_1",
+                title="🔍 首席排障专家",
+                mbti="INTJ",
+                reason="敏锐定位渲染性能瓶颈并提供第一手运行日志。",
+            ),
+            UserTitle(
+                name="极速响应者",
+                user_id="mock_user_2",
+                title="⚡ 毫秒级测试官",
+                mbti="ENTP",
+                reason="第一时间验证推送更新并反馈实测效果。",
+            ),
+        ]
+        quotes = [
+            GoldenQuote(
+                content="代码已更新，让我们再跑一次 T2I 渲染链路！",
+                sender="测试群友",
+                reason="充满极客幽默的实测宣言。",
+                user_id="mock_user_2",
+            )
+        ]
+        stats = GroupStatistics(
+            message_count=128,
+            total_characters=4580,
+            participant_count=12,
+            most_active_period="20:00-21:00",
+            golden_quotes=quotes,
+            emoji_count=18,
+            emoji_statistics=EmojiStatistics(face_count=10, other_emoji_count=8),
+            activity_visualization=viz,
+            token_usage=TokenUsage(
+                prompt_tokens=0, completion_tokens=0, total_tokens=0
+            ),
+            chat_quality_review=review,
+        )
+        mock_analysis_result = {
+            "statistics": stats,
+            "topics": topics,
+            "user_titles": user_titles,
+            "user_analysis": {},
+            "chat_quality_review": review,
+        }
+
+        diagnostics = {}
+        image_url, html_content = await self.report_generator.generate_image_report(
+            mock_analysis_result,
+            group_id,
+            self.html_render,
+            avatar_url_getter=None,
+            nickname_getter=None,
+            avatar_cache_namespace=platform_id,
+            allow_alphanumeric_user_ids=is_qq_official,
+            template_override=chosen_template,
+            diagnostics=diagnostics,
+        )
+
+        sent = False
+        send_ms = 0.0
+        send_err = None
+        if image_url and adapter:
+            send_start = time.perf_counter()
+            try:
+                caption = self._safe_report_caption() if is_qq_official else ""
+                sent = await adapter.send_image(group_id, image_url, caption=caption)
+            except Exception as e:
+                send_err = str(e)
+            send_ms = round((time.perf_counter() - send_start) * 1000, 2)
+
+        # 组织详细排障与耗时诊断文本
+        lines = [
+            "🧪【群分析 Mock 渲染诊断报告】（0 Token / 无 LLM）",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🎨 模板与资源分析：",
+            f"• 选用模板：{diagnostics.get('template_name', chosen_template)}",
+            f"• Jinja2 渲染耗时：{diagnostics.get('jinja_ms', 0)} ms",
+            f"• HTML 大小：{diagnostics.get('html_chars', 0)} 字符 ({round(diagnostics.get('html_bytes', 0)/1024, 2)} KB)",
+        ]
+
+        remote_fonts = diagnostics.get("remote_fonts", [])
+        if remote_fonts:
+            lines.append(f"• 外部字体依赖 ({len(remote_fonts)} 个):")
+            for f_url in remote_fonts[:3]:
+                lines.append(f"  - {f_url}")
+            if len(remote_fonts) > 3:
+                lines.append(f"  - ... 及其他 {len(remote_fonts)-3} 个")
+        else:
+            lines.append("• 外部字体依赖：无 (纯系统字体)")
+
+        remote_css = diagnostics.get("remote_css", [])
+        if remote_css:
+            lines.append(f"• 外部样式表 ({len(remote_css)} 个): {', '.join(remote_css[:2])}")
+
+        lines.append("\n⚡ T2I 渲染引擎实测结果：")
+        for att in diagnostics.get("attempts", []):
+            r_num = att.get("attempt", 1)
+            r_opt = att.get("options", {})
+            r_ms = att.get("duration_ms", 0)
+            r_status = att.get("status", "UNKNOWN")
+            r_stripped = "已剥离外部字体" if att.get("fonts_stripped") else "保留外部字体"
+            status_icon = "✅" if r_status == "SUCCESS" else "❌"
+            size_str = f", 大小: {round(att.get('size_bytes', 0)/1024, 1)} KB" if att.get("size_bytes") else ""
+            err_str = f" [错误: {att.get('error_summary')}]" if att.get("error_summary") else ""
+            lines.append(f"• 轮次 {r_num} ({r_opt.get('type')}, scale={r_opt.get('device_scale_factor_level')}, timeout={r_opt.get('timeout')}ms):")
+            lines.append(f"  ➔ 字体: {r_stripped}")
+            lines.append(f"  ➔ 耗时: {r_ms} ms")
+            lines.append(f"  ➔ 结果: {status_icon} {r_status}{size_str}{err_str}")
+
+        if image_url:
+            lines.append("\n📦 平台下发与投递：")
+            lines.append(f"• 适配器: {adapter.get_platform_name() if adapter else 'None'}")
+            lines.append(f"• 发送状态: {'✅ 成功' if sent else '❌ 失败'}")
+            lines.append(f"• 发送耗时: {send_ms} ms")
+            if send_err:
+                lines.append(f"• 异常: {send_err}")
+        else:
+            lines.append(f"\n❌ 图片生成失败: {diagnostics.get('error', '未知原因')}")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+        yield event.plain_result("\n".join(lines))
+
     async def _handle_daily_unsubscribe_command(self, event: AstrMessageEvent):
         if not self._is_qq_official_event(event):
             yield event.plain_result("❌ 每日群分析订阅仅支持 QQ 官方群。")
@@ -813,6 +1039,32 @@ class GroupDailyAnalysis(Star):
                     pass
 
     @filter.command(
+        "群分析 模拟",
+        alias={"group_analysis mock", "群分析 mock", "群分析 测试", "群分析 test", "群分析 仿真"},
+        priority=100,
+    )
+    async def group_analysis_mock_subcommand(
+        self, event: AstrMessageEvent, template_name: str | None = None
+    ):
+        """模拟生成群分析卡片（不调用 LLM，纯净测试卡片与详细耗时诊断）"""
+        event.stop_event()
+        async for result in self._handle_mock_analysis_command(event, template_name):
+            yield result
+
+    @filter.command(
+        "模拟群分析",
+        alias={"mock_analysis", "测试群分析"},
+        priority=100,
+    )
+    async def group_analysis_mock_direct(
+        self, event: AstrMessageEvent, template_name: str | None = None
+    ):
+        """模拟生成群分析卡片（不调用 LLM，纯净测试卡片与详细耗时诊断）"""
+        event.stop_event()
+        async for result in self._handle_mock_analysis_command(event, template_name):
+            yield result
+
+    @filter.command(
         "群分析 指纹认证",
         alias={"group_analysis fingerprint", "群分析 认证"},
         priority=100,
@@ -855,11 +1107,14 @@ class GroupDailyAnalysis(Star):
 
     @filter.command("群分析", alias={"group_analysis"})
     async def analyze_group_daily(
-        self, event: AstrMessageEvent, days: str | None = None
+        self,
+        event: AstrMessageEvent,
+        days: str | None = None,
+        template_name: str | None = None,
     ):
         """
         分析群聊日常活动（跨平台支持）
-        用法: /群分析 [天数]
+        用法: /群分析 [天数] 或 /群分析 模拟 [模板名]
         """
         if self._terminating:
             return
@@ -883,6 +1138,15 @@ class GroupDailyAnalysis(Star):
             if command_arg.lower() in {"debug", "诊断"}:
                 yield event.plain_result(self._build_group_analysis_debug_report())
                 return
+            if command_arg.lower().startswith(("mock", "模拟", "test", "测试", "仿真")):
+                target_tmpl = template_name
+                if not target_tmpl:
+                    parts = command_arg.replace(":", " ").replace("-", " ").split()
+                    if len(parts) > 1:
+                        target_tmpl = parts[1]
+                async for result in self._handle_mock_analysis_command(event, target_tmpl):
+                    yield result
+                return
             if command_arg in {"指纹认证", "fingerprint", "认证"}:
                 async for result in self._handle_fingerprint_command(event):
                     yield result
@@ -902,7 +1166,9 @@ class GroupDailyAnalysis(Star):
                     if analysis_days <= 0:
                         raise ValueError
                 except ValueError:
-                    yield event.plain_result("❌ 天数必须是正整数；诊断请使用 /群分析 debug")
+                    yield event.plain_result(
+                        "❌ 天数必须是正整数；模拟卡片请使用 /群分析 模拟 [模板名]；配置诊断请使用 /群分析 debug"
+                    )
                     return
 
             # QQ Official 专精版：手动 /群分析 也必须先在内测群完成指纹认证。

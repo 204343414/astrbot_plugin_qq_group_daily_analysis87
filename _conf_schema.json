@@ -299,13 +299,13 @@
             "t2i_r1_timeout": {
                 "type": "int",
                 "description": "第一轮：渲染超时 (ms)",
-                "default": 25000,
+                "default": 50000,
                 "slider": {
-                    "min": 10000,
-                    "max": 60000,
+                    "min": 5000,
+                    "max": 180000,
                     "step": 5000
                 },
-                "hint": "单次渲染的最长等待时间。默认 25 秒。"
+                "hint": "单次渲染的最长等待时间。默认 50000 毫秒 (50秒)。"
             },
             "t2i_r2_type": {
                 "type": "string",
@@ -342,10 +342,10 @@
             "t2i_r2_timeout": {
                 "type": "int",
                 "description": "第二轮 (回退)：渲染超时 (ms)",
-                "default": 20000,
+                "default": 60000,
                 "slider": {
-                    "min": 10000,
-                    "max": 60000,
+                    "min": 5000,
+                    "max": 180000,
                     "step": 5000
                 },
                 "hint": "回退尝试通常针对复杂页面，建议设置更长的超时时间（如 100000ms+）。"

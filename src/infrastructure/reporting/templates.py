@@ -40,8 +40,14 @@ class HTMLTemplates:
         self._env_lock = threading.Lock()
         self._active_template_override: str | None = None
 
+    def set_template_override(self, template_name: str | None):
+        """临时覆盖当前使用的模板（用于模拟/测试/单次指定模板）"""
+        self._active_template_override = template_name
+
     def select_fresh_template(self) -> str:
         """如果开启了随机模板，抽取一个模板作为当前批次的主题"""
+        if self._active_template_override:
+            return self._active_template_override
         if self.config_manager.get_random_report_template_enabled():
             import random
 
@@ -49,7 +55,6 @@ class HTMLTemplates:
             self._active_template_override = selected
             logger.info(f"[群分析插件] 开启了随机模板模式，本次选用模板: {selected}")
             return selected
-        self._active_template_override = None
         return self.config_manager.get_report_template()
 
     def get_current_template_name(self) -> str:

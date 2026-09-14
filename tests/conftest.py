@@ -15,9 +15,19 @@ if "astrbot.api" not in sys.modules:
     class Context:
         pass
 
+    class AstrBotConfig(dict):
+        pass
+
+    class StarTools:
+        @staticmethod
+        def get_data_dir(name):
+            return "/tmp"
+
     astrbot_api_module.logger = logging.getLogger("astrbot-test")
+    astrbot_api_module.AstrBotConfig = AstrBotConfig
     astrbot_event_module.AstrMessageEvent = AstrMessageEvent
     astrbot_star_module.Context = Context
+    astrbot_star_module.StarTools = StarTools
     astrbot_module.api = astrbot_api_module
     sys.modules.setdefault("astrbot", astrbot_module)
     sys.modules.setdefault("astrbot.api", astrbot_api_module)
