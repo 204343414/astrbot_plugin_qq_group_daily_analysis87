@@ -273,7 +273,7 @@ class ConfigManager:
 
     def get_t2i_font_source(self) -> str:
         """获取 T2I 字体源 (Mainland/Overseas)"""
-        return self._get_group("t2i_rendering").get("t2i_font_source", "Overseas")
+        return self._get_group("t2i_rendering").get("t2i_font_source", "Mainland")
 
     def get_t2i_google_fonts_mirror(self) -> str:
         """根据环境选择获取 Google Fonts 镜像地址"""

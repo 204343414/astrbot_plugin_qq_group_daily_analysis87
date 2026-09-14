@@ -357,6 +357,20 @@ class ReportGenerator(IReportGenerator):
         html_stripped = re.sub(r'<script[^>]*src=["\'][^"\']*(?:unpkg|jsdelivr)[^"\']*["\'][^>]*>\s*</script>', '', html_stripped, flags=re.IGNORECASE)
         return html_stripped
 
+    def _normalize_fonts_for_environment(self, html: str) -> str:
+        """根据配置的字体源自动优化镜像地址，防止国内环境因访问 googleapis.com 超时卡死"""
+        if self.config_manager.get_t2i_font_source() == "Mainland":
+            html = html.replace(
+                "https://fonts.googleapis.com", "https://fonts.loli.net"
+            ).replace(
+                "http://fonts.googleapis.com", "https://fonts.loli.net"
+            ).replace(
+                "https://fonts.gstatic.com", "https://gstatic.loli.net"
+            ).replace(
+                "http://fonts.gstatic.com", "https://gstatic.loli.net"
+            )
+        return html
+
     async def generate_image_report(
         self,
         analysis_result: dict,
@@ -412,6 +426,7 @@ class ReportGenerator(IReportGenerator):
                 render_payload.get("avatar_reuse_registry", {}),
                 render_payload.get("avatar_reuse_aliases", {}),
             )
+            html_content = self._normalize_fonts_for_environment(html_content)
 
             # 检查HTML内容是否有效
             if not html_content:

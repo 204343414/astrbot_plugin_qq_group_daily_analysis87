@@ -678,6 +678,7 @@ class GroupDailyAnalysis(Star):
                 manual=True,
                 skip_llm=True,
             )
+            result["is_mock"] = True
 
             if not result.get("success"):
                 yield event.plain_result(f"❌ 模拟群分析执行失败: {result.get('reason')}")
@@ -1217,9 +1218,10 @@ class GroupDailyAnalysis(Star):
                 if sent:
                     # Quota is charged only after the adapter confirms that the
                     # image was sent. Rendering/sending failure never consumes it.
-                    self.manual_analysis_quota_store.mark_success(
-                        str(platform_id), "__group__", str(group_id)
-                    )
+                    if not result.get("is_mock"):
+                        self.manual_analysis_quota_store.mark_success(
+                            str(platform_id), "__group__", str(group_id)
+                        )
                     await self._try_upload_image(group_id, image_url, platform_id)
                     return  # 成功发送
 
