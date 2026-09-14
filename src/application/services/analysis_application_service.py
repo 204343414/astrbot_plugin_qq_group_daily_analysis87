@@ -390,9 +390,6 @@ class AnalysisApplicationService:
                 "group_id": group_id,
                 "platform_id": getattr(adapter, "platform_id", platform_id),
             }
-                "group_id": group_id,
-                "platform_id": getattr(adapter, "platform_id", platform_id),
-            }
 
     # ----------------------------------------------------------------
     # 增量分析用例
