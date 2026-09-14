@@ -352,7 +352,8 @@ class ReportGenerator(IReportGenerator):
         import re
         # 移除 @font-face 块
         html_stripped = re.sub(r'@font-face\s*\{[^}]*\}', '', html, flags=re.IGNORECASE)
-        # 移除外部 link 字体及外部 script 依赖
+        # 移除 CSS @import、外部 link 字体及外部 script 依赖
+        html_stripped = re.sub(r'@import\s+(?:url\(\s*)?["\']?[^;\n]*(?:fonts|gstatic|jsdelivr|unpkg)[^;\n]*;?', '', html_stripped, flags=re.IGNORECASE)
         html_stripped = re.sub(r'<link[^>]*href=["\'][^"\']*(?:fonts|gstatic|jsdelivr|unpkg)[^"\']*["\'][^>]*>', '', html_stripped, flags=re.IGNORECASE)
         html_stripped = re.sub(r'<script[^>]*src=["\'][^"\']*(?:unpkg|jsdelivr)[^"\']*["\'][^>]*>\s*</script>', '', html_stripped, flags=re.IGNORECASE)
         return html_stripped
@@ -484,11 +485,14 @@ class ReportGenerator(IReportGenerator):
                         logger.info(f"正在尝试第 {attempt} 轮渲染策略: {image_options}")
 
                         # 改为获取 bytes 数据，避免 OneBot 无法访问内部 URL
-                        image_data = await html_render_func(
-                            current_html,  # 渲染后的HTML内容
-                            {},  # 空数据字典，因为数据已包含在HTML中
-                            False,  # return_url=False，直接获取图片数据
-                            image_options,
+                        image_data = await asyncio.wait_for(
+                            html_render_func(
+                                current_html,  # 渲染后的HTML内容
+                                {},  # 空数据字典，因为数据已包含在HTML中
+                                False,  # return_url=False，直接获取图片数据
+                                image_options,
+                            ),
+                            timeout=max(1, int(image_options.get("timeout", 30000)) / 1000),
                         )
 
                         attempt_duration_ms = round((time.perf_counter() - attempt_start) * 1000, 2)

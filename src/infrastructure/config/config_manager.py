@@ -238,11 +238,11 @@ class ConfigManager:
 
         r1_type = group.get("t2i_r1_type", "jpeg")
         r1_scale = group.get("t2i_r1_device_scale", "high")
-        r1_timeout = int(group.get("t2i_r1_timeout", 50000))
+        r1_timeout = int(group.get("t2i_r1_timeout", 15000))
 
         r2_type = group.get("t2i_r2_type", "jpeg")
         r2_scale = group.get("t2i_r2_device_scale", "normal")
-        r2_timeout = int(group.get("t2i_r2_timeout", 60000))
+        r2_timeout = int(group.get("t2i_r2_timeout", 30000))
 
         return [
             # 第一轮：质量与速度均衡
