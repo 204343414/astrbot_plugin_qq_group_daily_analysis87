@@ -16,7 +16,17 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from ...domain.entities.incremental_state import IncrementalBatch
-from ...domain.models.data_models import TokenUsage
+from ...domain.models.data_models import (
+    ActivityVisualization,
+    EmojiStatistics,
+    GoldenQuote,
+    GroupStatistics,
+    QualityDimension,
+    QualityReview,
+    SummaryTopic,
+    TokenUsage,
+    UserTitle,
+)
 from ...domain.repositories.analysis_repository import IAnalysisProvider
 from ...domain.repositories.report_repository import IReportGenerator
 from ...domain.services.analysis_domain_service import (
@@ -106,6 +116,7 @@ class AnalysisApplicationService:
         platform_id: str | None = None,
         manual: bool = False,
         days: int | None = None,
+        skip_llm: bool = False,
     ) -> dict[str, Any]:
         """
         执行每日分析用例。
@@ -123,7 +134,7 @@ class AnalysisApplicationService:
 
         async with self.group_lock(group_id, "daily"):
             logger.info(
-                f"开始执行分析用例: 群 {group_id}, platform_id={platform_id or '默认'}, days={days or '默认'}"
+                f"开始执行分析用例: 群 {group_id}, platform_id={platform_id or '默认'}, days={days or '默认'}, skip_llm={skip_llm}"
             )
 
             # 1. 获取适配器
@@ -181,8 +192,12 @@ class AnalysisApplicationService:
             )
 
             if not raw_messages:
-                logger.warning(f"群 {group_id} 在最近 {days} 天内无消息或无法获取")
-                return {"success": False, "reason": "no_messages"}
+                if skip_llm:
+                    logger.info(f"群 {group_id} 在最近 {days} 天内无消息，模拟模式生成基础空卡片")
+                    raw_messages = []
+                else:
+                    logger.warning(f"群 {group_id} 在最近 {days} 天内无消息或无法获取")
+                    return {"success": False, "reason": "no_messages"}
 
             # 3. 清理消息 (Filter commands, bot messages, noise)
             from ...domain.services.message_cleaner_service import MessageCleanerService
@@ -200,7 +215,7 @@ class AnalysisApplicationService:
             # 对于自动任务，强制过滤指令；对于手动任务，也建议过滤以保持报告纯净
             unified_messages = cleaner.clean_messages(
                 raw_messages, bot_self_ids=bot_self_ids, filter_commands=True
-            )
+            ) if raw_messages else []
             logger.info(
                 "消息清洗完成: group=%s, platform=%s, cleaned_count=%s, dropped=%s",
                 group_id,
@@ -211,38 +226,44 @@ class AnalysisApplicationService:
 
             # 4. 检查最小消息阈值 (在清理后进行)
             threshold = self.config_manager.get_min_messages_threshold()
-            if len(unified_messages) < threshold and not manual:
+            if len(unified_messages) < threshold and not manual and not skip_llm:
                 logger.info(
                     f"群 {group_id} 有效消息数 ({len(unified_messages)}) 未达到自动分析阈值 ({threshold})"
                 )
                 return {"success": False, "reason": "below_threshold"}
 
-            # 5. 基础统计 (Domain Service)
-            statistics = await asyncio.to_thread(
-                self.statistics_service.calculate_group_statistics, unified_messages
-            )
+            if unified_messages:
+                # 5. 基础统计 (Domain Service)
+                statistics = await asyncio.to_thread(
+                    self.statistics_service.calculate_group_statistics, unified_messages
+                )
 
-            # 4. 用户分析 (Domain Service)
-            user_activity = await asyncio.to_thread(
-                self.analysis_domain_service.analyze_user_activity,
-                unified_messages,
-                bot_self_ids,
-            )
+                # 4. 用户分析 (Domain Service)
+                user_activity = await asyncio.to_thread(
+                    self.analysis_domain_service.analyze_user_activity,
+                    unified_messages,
+                    bot_self_ids,
+                )
+            else:
+                now_str = dt.datetime.now().strftime("%Y-%m-%d")
+                statistics = GroupStatistics(
+                    message_count=0,
+                    total_characters=0,
+                    participant_count=0,
+                    most_active_period="00:00-01:00",
+                    golden_quotes=[],
+                    emoji_count=0,
+                    activity_visualization=ActivityVisualization(
+                        hourly_activity={f"{h:02d}:00": 0 for h in range(24)},
+                        daily_activity={now_str: 0},
+                    ),
+                    token_usage=TokenUsage(),
+                )
+                user_activity = {}
 
             max_user_titles = self.config_manager.get_max_user_titles()
             top_users = self.analysis_domain_service.get_top_users(
                 user_activity, limit=max_user_titles
-            )
-
-            # 5. LLM 语义分析 (为了保持兼容，目前直接传 UnifiedMessage，后续如需传 raw dict 再加转换)
-            # LLMAnalyzer 内部可能已经处理了转换（见之前代码）
-            topic_enabled = self.config_manager.get_topic_analysis_enabled()
-            user_title_enabled = self.config_manager.get_user_title_analysis_enabled()
-            golden_quote_enabled = (
-                self.config_manager.get_golden_quote_analysis_enabled()
-            )
-            chat_quality_enabled = (
-                self.config_manager.get_chat_quality_analysis_enabled()
             )
 
             topics = []
@@ -251,44 +272,101 @@ class AnalysisApplicationService:
             chat_quality_review = None
             total_token_usage = TokenUsage()
 
-            # Note: LLMAnalyzer 目前可能只接收 legacy 格式或特定的 UnifiedMessage 适配
-            # 暂时转换回 legacy 格式以确保稳定性，直到 LLMAnalyzer 被重构
-            legacy_messages = self.statistics_service._convert_to_legacy_dict(
-                unified_messages
-            )
-
-            unified_msg_origin = (
-                f"{platform_id}:GroupMessage:{group_id}" if platform_id else group_id
-            )
-
-            if (
-                topic_enabled
-                or user_title_enabled
-                or golden_quote_enabled
-                or chat_quality_enabled
-            ):
-                async with self.llm_semaphore:
-                    logger.debug(f"[LLM] 已进入分析队列 (群: {group_id})")
-                    (
-                        topics,
-                        user_titles,
-                        golden_quotes,
-                        total_token_usage,
-                        chat_quality_review,
-                    ) = await self.llm_analyzer.analyze_all_concurrent(
-                        legacy_messages,
-                        user_activity,
-                        umo=unified_msg_origin,
-                        top_users=top_users,
-                        topic_enabled=topic_enabled,
-                        user_title_enabled=user_title_enabled,
-                        golden_quote_enabled=golden_quote_enabled,
-                        chat_quality_enabled=chat_quality_enabled,
+            if skip_llm:
+                logger.info(f"[{group_id}] 模拟模式：跳过 LLM 语义分析，直接填充测试卡片数据")
+                topics = [
+                    SummaryTopic(
+                        topic="群聊日常模拟测试",
+                        contributors=["群友"],
+                        detail="本次报告通过模拟模式生成（未调用 LLM 接口），用于排查 T2I 渲染链路与模板性能。",
+                        contributor_ids=[],
                     )
+                ]
+                user_titles = [
+                    UserTitle(
+                        name="测试群友",
+                        user_id="10001",
+                        title="活跃测试员",
+                        mbti="INTJ",
+                        reason="今日在群内积极参与测试与排障。",
+                    )
+                ]
+                golden_quotes = [
+                    GoldenQuote(
+                        content="测试消息：T2I 渲染链路排查中！",
+                        sender="测试群友",
+                        reason="模拟金句",
+                        user_id="10001",
+                    )
+                ]
+                chat_quality_review = QualityReview(
+                    title="今日群聊质量锐评",
+                    subtitle="模拟模式 · 快速排障",
+                    dimensions=[
+                        QualityDimension(
+                            name="活跃度",
+                            percentage=85.0,
+                            comment="正常交流",
+                            color="#4CAF50",
+                        ),
+                        QualityDimension(
+                            name="健康度",
+                            percentage=90.0,
+                            comment="氛围良好",
+                            color="#2196F3",
+                        ),
+                    ],
+                    summary="今日群内交流健康活跃，模拟测试通过。",
+                )
+            else:
+                # 5. LLM 语义分析
+                topic_enabled = self.config_manager.get_topic_analysis_enabled()
+                user_title_enabled = self.config_manager.get_user_title_analysis_enabled()
+                golden_quote_enabled = (
+                    self.config_manager.get_golden_quote_analysis_enabled()
+                )
+                chat_quality_enabled = (
+                    self.config_manager.get_chat_quality_analysis_enabled()
+                )
+
+                legacy_messages = self.statistics_service._convert_to_legacy_dict(
+                    unified_messages
+                )
+
+                unified_msg_origin = (
+                    f"{platform_id}:GroupMessage:{group_id}" if platform_id else group_id
+                )
+
+                if (
+                    topic_enabled
+                    or user_title_enabled
+                    or golden_quote_enabled
+                    or chat_quality_enabled
+                ):
+                    async with self.llm_semaphore:
+                        logger.debug(f"[LLM] 已进入分析队列 (群: {group_id})")
+                        (
+                            topics,
+                            user_titles,
+                            golden_quotes,
+                            total_token_usage,
+                            chat_quality_review,
+                        ) = await self.llm_analyzer.analyze_all_concurrent(
+                            legacy_messages,
+                            user_activity,
+                            umo=unified_msg_origin,
+                            top_users=top_users,
+                            topic_enabled=topic_enabled,
+                            user_title_enabled=user_title_enabled,
+                            golden_quote_enabled=golden_quote_enabled,
+                            chat_quality_enabled=chat_quality_enabled,
+                        )
 
             # 回填结果
             statistics.golden_quotes = golden_quotes
             statistics.token_usage = total_token_usage
+            if not statistics.chat_quality_review:
+                statistics.chat_quality_review = chat_quality_review
 
             analysis_result = {
                 "statistics": statistics,
@@ -299,7 +377,8 @@ class AnalysisApplicationService:
             }
 
             # 6. 持久化摘要 (Persistence)
-            await self.history_manager.save_analysis(group_id, analysis_result)
+            if not skip_llm:
+                await self.history_manager.save_analysis(group_id, analysis_result)
 
             # 7. 生成报告并发送 (应用层编排发送动作)
             # 这里由调用方处理发送，本服务只返回分析结果和可能的视觉产物
@@ -308,6 +387,9 @@ class AnalysisApplicationService:
                 "analysis_result": analysis_result,
                 "messages_count": len(unified_messages),
                 "adapter": adapter,
+                "group_id": group_id,
+                "platform_id": getattr(adapter, "platform_id", platform_id),
+            }
                 "group_id": group_id,
                 "platform_id": getattr(adapter, "platform_id", platform_id),
             }
