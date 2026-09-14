@@ -336,6 +336,17 @@ class ReportGenerator(IReportGenerator):
         target_path.parent.mkdir(parents=True, exist_ok=True)
         return target_path
 
+    @staticmethod
+    def _strip_remote_fonts_for_fallback(html: str) -> str:
+        """在重试轮次中移除可能导致 Browserless 超时卡死的远程大字体声明，强制使用系统字体。"""
+        import re
+        # 移除 @font-face 块
+        html_stripped = re.sub(r'@font-face\s*\{[^}]*\}', '', html, flags=re.IGNORECASE)
+        # 移除外部 link 字体及外部 script 依赖
+        html_stripped = re.sub(r'<link[^>]*href=["\'][^"\']*(?:fonts|gstatic|jsdelivr|unpkg)[^"\']*["\'][^>]*>', '', html_stripped, flags=re.IGNORECASE)
+        html_stripped = re.sub(r'<script[^>]*src=["\'][^"\']*(?:unpkg|jsdelivr)[^"\']*["\'][^>]*>\s*</script>', '', html_stripped, flags=re.IGNORECASE)
+        return html_stripped
+
     async def generate_image_report(
         self,
         analysis_result: dict,
@@ -406,11 +417,16 @@ class ReportGenerator(IReportGenerator):
                         if image_options.get("type") == "png":
                             image_options.pop("quality", None)
 
+                        # 在回退重试轮次中，自动移除外部大字体，转为极速系统字体渲染，彻底消除 500 超时
+                        current_html = html_content
+                        if attempt > 1:
+                            current_html = self._strip_remote_fonts_for_fallback(html_content)
+
                         logger.info(f"正在尝试第 {attempt} 轮渲染策略: {image_options}")
 
                         # 改为获取 bytes 数据，避免 OneBot 无法访问内部 URL
                         image_data = await html_render_func(
-                            html_content,  # 渲染后的HTML内容
+                            current_html,  # 渲染后的HTML内容
                             {},  # 空数据字典，因为数据已包含在HTML中
                             False,  # return_url=False，直接获取图片数据
                             image_options,

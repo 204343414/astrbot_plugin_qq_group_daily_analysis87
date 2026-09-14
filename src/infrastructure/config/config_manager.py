@@ -233,7 +233,7 @@ class ConfigManager:
         return self._get_group("basic").get("enable_base64_image", False)
 
     def get_t2i_rendering_strategies(self) -> list[dict]:
-        """获取用户配置的两轮 T2I 渲染策略"""
+        """获取用户配置的 T2I 渲染策略（包含保底降级）"""
         group = self._get_group("t2i_rendering")
 
         return [
@@ -252,6 +252,14 @@ class ConfigManager:
                 "quality": group.get("t2i_r2_quality", 80),
                 "device_scale_factor_level": group.get("t2i_r2_device_scale", "normal"),
                 "timeout": group.get("t2i_r2_timeout", 60000),
+            },
+            # 第三轮：极速系统字体兜底（防止前两轮因超大外部字体/高分辨率引发 Browserless 500）
+            {
+                "full_page": True,
+                "type": "jpeg",
+                "quality": 75,
+                "device_scale_factor_level": "normal",
+                "timeout": 30000,
             },
         ]
 
